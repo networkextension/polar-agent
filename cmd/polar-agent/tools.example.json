@@ -1,0 +1,54 @@
+{
+  "_comment": "polar-agent multi-tool config. Copy to ~/.polar/tools.json (or set POLAR_AGENT_TOOLS=<path>) and edit. Entries here OVERRIDE the built-in defaults by name; new names are appended. {{workdir}} and {{prompt}} are template variables substituted at spawn time. Streaming output to the operator terminal is automatic; capBuffer caps stdout/stderr at 200K/50K. POLAR_KIMI_TIMEOUT env var (or per-tool timeout_seconds) controls wall-clock cap; default 30 minutes.",
+
+  "default_tool": "kimi",
+
+  "tools": [
+    {
+      "_comment": "kimi-cli (Moonshot). --quiet = print + final-message-only. --yolo = auto-approve. --continue resumes per-workdir session. The 'No previous session' stderr substring triggers a one-shot retry without --continue (first message in a fresh workdir).",
+      "name": "kimi",
+      "binary": "kimi-cli",
+      "args_first":  ["--work-dir={{workdir}}", "--quiet", "--yolo", "--prompt={{prompt}}"],
+      "args_resume": ["--work-dir={{workdir}}", "--quiet", "--yolo", "--continue", "--prompt={{prompt}}"],
+      "no_prior_session_marker": "No previous session"
+    },
+
+    {
+      "_comment": "Anthropic claude. -p = print mode (non-interactive). --continue resumes the most recent conversation in cwd. bypassPermissions = the autonomous approval mode. We chdir into workdir explicitly so claude's per-cwd session resolution lands in the right place. ANTHROPIC_API_KEY is read from inherited env unless overridden here. Uncomment the env block to force a per-tool proxy.",
+      "name": "claude",
+      "binary": "claude",
+      "args_first":  ["-p", "--add-dir", "{{workdir}}", "--permission-mode", "bypassPermissions", "{{prompt}}"],
+      "args_resume": ["-p", "--continue", "--add-dir", "{{workdir}}", "--permission-mode", "bypassPermissions", "{{prompt}}"],
+      "cwd": "{{workdir}}",
+      "env": {
+        "https_proxy": "http://127.0.0.1:10082",
+        "http_proxy":  "http://127.0.0.1:10082"
+      }
+    },
+
+    {
+      "_comment": "OpenAI codex. exec = non-interactive subcommand. exec resume --last reuses the most recent session. --dangerously-bypass-approvals-and-sandbox = autonomous. Auth comes from CODEX_HOME (set by 'codex login'); no API key env var needed.",
+      "name": "codex",
+      "binary": "codex",
+      "args_first":  ["exec", "--cd", "{{workdir}}", "--dangerously-bypass-approvals-and-sandbox", "{{prompt}}"],
+      "args_resume": ["exec", "resume", "--last", "--cd", "{{workdir}}", "--dangerously-bypass-approvals-and-sandbox", "{{prompt}}"],
+      "env": {
+        "https_proxy": "http://127.0.0.1:10082",
+        "http_proxy":  "http://127.0.0.1:10082"
+      }
+    },
+
+    {
+      "_comment": "Custom tool example. Pretend you have a wrapper script /opt/myhelper that takes --cd and --continue flags. Per-tool timeout_seconds overrides the global default. ANTHROPIC_API_KEY is fed from a literal value here (not recommended for real keys — leave that key out and let parent env carry it).",
+      "name": "myhelper",
+      "binary": "/opt/myhelper/bin/myhelper",
+      "args_first":  ["--cd={{workdir}}", "{{prompt}}"],
+      "args_resume": ["--cd={{workdir}}", "--continue", "{{prompt}}"],
+      "no_prior_session_marker": "no session",
+      "timeout_seconds": 3600,
+      "env": {
+        "MYHELPER_LOG_DIR": "{{workdir}}/.myhelper"
+      }
+    }
+  ]
+}

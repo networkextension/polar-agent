@@ -1,0 +1,7 @@
+# Built binaries at repo root (from `go build .`)
+/polar-agent
+/polar-agent-test
+# Release tarballs
+dist/
+*.log
+.DS_Store
