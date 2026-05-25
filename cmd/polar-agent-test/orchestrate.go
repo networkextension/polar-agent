@@ -80,9 +80,34 @@ func runOrchestrate(args []string) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Isolated bundles dir per orchestrate run — scenarios stage
+	// fixture .skill content here; the agent reads from the same path
+	// via POLAR_AGENT_BUNDLES_DIR. Honor a pre-existing value (CI may
+	// want a stable location), otherwise mint a fresh temp dir and
+	// clean it up on shutdown.
+	bundlesDir := os.Getenv("POLAR_AGENT_BUNDLES_DIR")
+	cleanupBundles := false
+	if bundlesDir == "" {
+		d, err := os.MkdirTemp("", "polar-agent-test-bundles-")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "orchestrate: tempdir: %v\n", err)
+			return 1
+		}
+		bundlesDir = d
+		cleanupBundles = true
+		_ = os.Setenv("POLAR_AGENT_BUNDLES_DIR", bundlesDir)
+	}
+	fmt.Fprintf(os.Stderr, "[orchestrate] bundles dir: %s\n", bundlesDir)
+	if cleanupBundles {
+		defer os.RemoveAll(bundlesDir)
+	}
+
 	cmd := exec.CommandContext(ctx, binPath, "test-serve", "--addr", addr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "POLAR_AGENT_TEST_ADDR="+addr)
+	cmd.Env = append(os.Environ(),
+		"POLAR_AGENT_TEST_ADDR="+addr,
+		"POLAR_AGENT_BUNDLES_DIR="+bundlesDir,
+	)
 
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {

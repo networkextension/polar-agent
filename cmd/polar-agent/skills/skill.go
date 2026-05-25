@@ -27,9 +27,15 @@ const (
 	KindShell     SkillKind = "shell"
 	KindProxy     SkillKind = "proxy"
 	KindWireGuard SkillKind = "wireguard"
-	KindKDP   SkillKind = "kdp"
+	KindKDP       SkillKind = "kdp"
 	KindMCPServer SkillKind = "mcp-server"
 	KindVNC       SkillKind = "vnc"
+	// KindBundle is the generic dispatcher for dock-managed skill
+	// bundles (.skill ZIPs containing SKILL.md + scripts/). Unlike
+	// the other built-in kinds, one bundleSkill instance handles many
+	// bundles — they're identified by name+version in the skill.start
+	// config. See bundle.go for the install/exec lifecycle.
+	KindBundle SkillKind = "bundle"
 )
 
 // Skill is the per-kind contract. Implementations live in their own
