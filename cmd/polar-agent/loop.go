@@ -26,16 +26,41 @@ import (
 // Map is process-global because the agent has one WS connection at a
 // time and a small number of concurrent runs.
 type runRegistry struct {
-	mu   sync.Mutex
-	byID map[int64]skills.Run
+	mu     sync.Mutex
+	byID   map[int64]skills.Run
+	kindBy map[int64]string // P1a: runID → SkillKind, for uninstall active-runs gate
 }
 
-var activeRuns = &runRegistry{byID: map[int64]skills.Run{}}
+var activeRuns = &runRegistry{
+	byID:   map[int64]skills.Run{},
+	kindBy: map[int64]string{},
+}
 
 func (r *runRegistry) put(runID int64, run skills.Run) {
 	r.mu.Lock()
 	r.byID[runID] = run
 	r.mu.Unlock()
+}
+
+// putWithKind records the run + its skill kind so uninstall can later
+// check whether removing a bundle would orphan active runs.
+func (r *runRegistry) putWithKind(runID int64, run skills.Run, kind string) {
+	r.mu.Lock()
+	r.byID[runID] = run
+	r.kindBy[runID] = kind
+	r.mu.Unlock()
+}
+
+// kindsByRunID returns a snapshot of {runID: kind} for the
+// uninstaller's active-runs gate.
+func (r *runRegistry) kindsByRunID() map[int64]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[int64]string, len(r.kindBy))
+	for k, v := range r.kindBy {
+		out[k] = v
+	}
+	return out
 }
 
 func (r *runRegistry) get(runID int64) (skills.Run, bool) {
@@ -48,6 +73,7 @@ func (r *runRegistry) get(runID int64) (skills.Run, bool) {
 func (r *runRegistry) delete(runID int64) {
 	r.mu.Lock()
 	delete(r.byID, runID)
+	delete(r.kindBy, runID)
 	r.mu.Unlock()
 }
 
@@ -407,7 +433,7 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 				// Coder Runs don't satisfy RunInput/RunResizer; that's
 				// fine — those envelopes will type-assert and skip.
 				log.Printf("[agent] skill.Start ok run=%d kind=%s — pumping events", e.RunID, e.SkillKind)
-				activeRuns.put(e.RunID, run)
+				activeRuns.putWithKind(e.RunID, run, e.SkillKind)
 				defer activeRuns.delete(e.RunID)
 				for ev := range run.Events() {
 					sendSkillEvent(send, e.RunID, ev.Kind, ev.Data)
@@ -471,6 +497,64 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 				continue
 			}
 			_ = run.Stop(env.Reason)
+		case "skill.install":
+			// P1a: dock asks agent to install a catalog bundle into
+			// ~/.polar/bundles/. Result reported via skill.install.result.
+			var req skills.InstallRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				log.Printf("skill.install parse: %v", err)
+				continue
+			}
+			log.Printf("[agent] skill.install received id=%s %s/%s@%s", req.InstallID, req.Publisher, req.SkillKind, req.Version)
+			go func(r skills.InstallRequest) {
+				inst := getInstaller()
+				if inst == nil {
+					log.Printf("skill.install: bundle skill not registered, cannot install")
+					return
+				}
+				res := inst.Install(ctx, r)
+				log.Printf("[agent] skill.install id=%s status=%s err=%q", res.InstallID, res.Status, res.Error)
+				sendInstallResult(send, "skill.install.result", res)
+				// Trigger an immediate advertise so dock sees the new
+				// installed bundle without waiting for the 60s tick.
+				if res.Status == skills.InstallStatusOK || res.Status == skills.InstallStatusAlreadyInstalled {
+					tick := map[string]any{
+						"kind":   "skill.advertise",
+						"skills": skills.Default().Advertised(),
+					}
+					if b, err := json.Marshal(tick); err == nil {
+						_ = send(b)
+					}
+				}
+			}(req)
+		case "skill.uninstall":
+			// P1a: dock asks agent to remove an installed bundle.
+			var req skills.UninstallRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				log.Printf("skill.uninstall parse: %v", err)
+				continue
+			}
+			log.Printf("[agent] skill.uninstall received id=%s %s/%s@%s force=%v",
+				req.InstallID, req.Publisher, req.SkillKind, req.Version, req.Force)
+			go func(r skills.UninstallRequest) {
+				inst := getInstaller()
+				if inst == nil {
+					return
+				}
+				res := inst.Uninstall(r, activeRuns.kindsByRunID())
+				log.Printf("[agent] skill.uninstall id=%s status=%s removed_runs=%d err=%q",
+					res.InstallID, res.Status, res.RemovedRuns, res.Error)
+				sendUninstallResult(send, "skill.uninstall.result", res)
+				if res.Status == skills.InstallStatusOK {
+					tick := map[string]any{
+						"kind":   "skill.advertise",
+						"skills": skills.Default().Advertised(),
+					}
+					if b, err := json.Marshal(tick); err == nil {
+						_ = send(b)
+					}
+				}
+			}(req)
 		case "ping":
 			// app-level ping (websocket protocol pings handled above)
 		default:
