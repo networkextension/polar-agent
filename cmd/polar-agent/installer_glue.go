@@ -47,6 +47,7 @@ func sendInstallResult(send func([]byte) error, kind string, res skills.InstallR
 		"error":          res.Error,
 		"duration_ms":    res.DurationMS,
 		"finished_at":    res.FinishedAt,
+		"signed_by":      res.SignedBy, // P2 — empty unless verified
 	}
 	b, err := json.Marshal(frame)
 	if err != nil {
