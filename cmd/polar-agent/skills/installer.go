@@ -61,6 +61,9 @@ const (
 	InstallStatusNotInstalled    InstallStatus = "not_installed"   // uninstall only
 	InstallStatusFSError         InstallStatus = "fs_error"
 	InstallStatusAlreadyInstalled InstallStatus = "already_installed"
+	// P2 — signature gate outcomes
+	InstallStatusSignatureMissing InstallStatus = "signature_missing"
+	InstallStatusSignatureInvalid InstallStatus = "signature_invalid"
 )
 
 // InstallRequest is the agent-side shape of the skill.install frame.
@@ -90,6 +93,9 @@ type InstallResult struct {
 	Error         string        `json:"error,omitempty"`
 	DurationMS    int64         `json:"duration_ms"`
 	FinishedAt    time.Time     `json:"finished_at"`
+	// P2 — populated when manifest_preview carried a publisher_pubkey
+	// + signature and verification ran. Empty for unsigned installs.
+	SignedBy string `json:"signed_by,omitempty"`
 }
 
 // UninstallRequest mirrors skill.uninstall.
@@ -195,6 +201,34 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) InstallResu
 		res.FinishedAt = time.Now()
 		i.storeResult(res)
 		return res
+	}
+
+	// 2.5 P2: Ed25519 signature gate. Verifies the publisher's
+	// signature over the bundle's SHA256 if manifest_preview carried
+	// one. If POLAR_AGENT_REQUIRE_SIGNED=true and no signature was
+	// provided, refuse the install regardless of how well the rest
+	// of the pipeline succeeded.
+	verify := VerifySkillSignature(req.ManifestPreview, strings.ToLower(strings.TrimSpace(req.SHA256)))
+	if verify.HadSignature && !verify.Verified {
+		res.Status = InstallStatusSignatureInvalid
+		res.Error = "signature: " + verify.Reason
+		_ = os.RemoveAll(bundleDir)
+		res.DurationMS = time.Since(start).Milliseconds()
+		res.FinishedAt = time.Now()
+		i.storeResult(res)
+		return res
+	}
+	if !verify.HadSignature && RequireSigned() {
+		res.Status = InstallStatusSignatureMissing
+		res.Error = ErrSignatureMissing.Error()
+		_ = os.RemoveAll(bundleDir)
+		res.DurationMS = time.Since(start).Milliseconds()
+		res.FinishedAt = time.Now()
+		i.storeResult(res)
+		return res
+	}
+	if verify.Verified {
+		res.SignedBy = verify.Publisher
 	}
 
 	// 3. manifest validation
