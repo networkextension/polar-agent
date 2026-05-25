@@ -404,6 +404,18 @@ func runAttach(args []string) int {
 		skills.Register(skills.NewMCPServerSkill())
 	}
 
+	// Bundle skill: dispatcher for dock-managed declarative skill
+	// bundles (.skill ZIPs under ~/.polar/bundles/). Unlike the other
+	// kinds, one registration handles many bundles — name+version are
+	// in the skill.start config. POLAR_AGENT_BUNDLES_DIR overrides the
+	// install root (tests + multi-tenant setups). Unix-only; the stub
+	// returns nil on Windows.
+	if os.Getenv("POLAR_AGENT_BUNDLES_DISABLED") != "true" {
+		if bundleSk := skills.NewBundleSkill(os.Getenv("POLAR_AGENT_BUNDLES_DIR")); bundleSk != nil {
+			skills.Register(bundleSk)
+		}
+	}
+
 	if err := runAgentLoop(cfg, *bot, resolved, *verbose, spec); err != nil {
 		log.Printf("agent loop ended: %v", err)
 		return exitNet

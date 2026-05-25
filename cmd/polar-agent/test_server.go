@@ -143,6 +143,11 @@ func registerSkillsForTestServer(workdir string) {
 	tryRegister(skills.NewKDPSkill())
 	tryRegister(skills.NewVncSkill())
 	tryRegister(skills.NewMCPServerSkill())
+	// Bundle skill — honor POLAR_AGENT_BUNDLES_DIR (set by orchestrator
+	// to an isolated tmp dir so scenarios don't poison the operator's
+	// ~/.polar/bundles/). Empty falls back to the default home path
+	// inside NewBundleSkill.
+	tryRegister(skills.NewBundleSkill(os.Getenv("POLAR_AGENT_BUNDLES_DIR")))
 }
 
 func listSkillKinds() []string {

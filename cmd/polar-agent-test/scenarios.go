@@ -209,6 +209,70 @@ var scenarios = []scenario{
 		desc: "POLAR_MCP_SESSION_IDLE_SEC=1 + sleep > 30s tick → session auto-evicted",
 		run:  scenarioMCPSessionIdleEvict,
 	},
+	// --- Bundle skill scenarios ---
+	// These don't require dock — fixtures are either pre-staged on disk
+	// (POLAR_AGENT_BUNDLES_DIR is propagated by the orchestrator) or
+	// served from an in-process httptest server bound to 127.0.0.1.
+	{
+		name: "bundle-list",
+		desc: "skill.list advertises kind=bundle with installed=[] in capabilities",
+		run:  scenarioBundleList,
+	},
+	{
+		name: "bundle-exec-shell",
+		desc: "pre-staged .sh entrypoint, no download_url → exec succeeds, stdout line streamed, exit ok",
+		run:  scenarioBundleExecShell,
+	},
+	{
+		name: "bundle-exec-stderr-stream",
+		desc: "entrypoint writes to stderr → EventLog{stream:stderr} received",
+		run:  scenarioBundleExecStderrStream,
+	},
+	{
+		name: "bundle-exec-nonzero-exit",
+		desc: "entrypoint exits 7 → EventExit ok=false exit_code=7",
+		run:  scenarioBundleExecNonzeroExit,
+	},
+	{
+		name: "bundle-bad-name",
+		desc: "skill.start with bundle=\"../evil\" → immediate exit event with validation error",
+		run:  scenarioBundleBadName,
+	},
+	{
+		name: "bundle-bad-entrypoint",
+		desc: "entrypoint outside scripts/ → exit event with validation error",
+		run:  scenarioBundleBadEntrypoint,
+	},
+	{
+		name: "bundle-bad-env",
+		desc: "env LD_PRELOAD → exit event with validation error",
+		run:  scenarioBundleBadEnv,
+	},
+	{
+		name: "bundle-missing-no-download",
+		desc: "bundle not on disk + download_url empty → exit event with install error",
+		run:  scenarioBundleMissingNoDownload,
+	},
+	{
+		name: "bundle-http-install",
+		desc: "httptest server serves a .skill ZIP → agent downloads, sha256-verifies, unzips, runs",
+		run:  scenarioBundleHTTPInstall,
+	},
+	{
+		name: "bundle-http-sha256-mismatch",
+		desc: "httptest serves a ZIP but config carries wrong sha256 → exit event with mismatch error",
+		run:  scenarioBundleHTTPSHA256Mismatch,
+	},
+	{
+		name: "bundle-stop",
+		desc: "long-running entrypoint, send skill.stop → exit event arrives in <2s",
+		run:  scenarioBundleStop,
+	},
+	{
+		name: "bundle-cached-skips-download",
+		desc: "pre-staged + bogus download_url → succeeds, proves no HTTP call on cache hit",
+		run:  scenarioBundleCachedSkipsDownload,
+	},
 }
 
 func scenarioPing(ctx context.Context, c *client) error {
