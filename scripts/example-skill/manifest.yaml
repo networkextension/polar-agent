@@ -1,0 +1,24 @@
+publisher: com.networkextension.example
+kind: echo
+version: 0.1.0
+entrypoint: scripts/run.py
+
+display_name: Echo
+description: |
+  Reference bundle for the polar-agent .skill format. Reads lines from
+  stdin and writes them back to stdout. Use this as a copy-paste
+  starting point for new skills.
+license: Apache-2.0
+homepage: https://github.com/networkextension/polar-agent
+
+runtime:
+  kind: python
+  python_version: ">=3.8"
+  venv: false
+
+capabilities:
+  tools:
+    - name: echo
+      description: Identity transform on text
+
+requires: []

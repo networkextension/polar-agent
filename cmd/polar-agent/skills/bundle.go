@@ -125,10 +125,14 @@ func (b *bundleSkill) hasPython3() bool {
 }
 
 // installedBundle is one entry in the advertise capabilities payload.
+// Publisher + tool list are P0a additions; older bundles without
+// manifest.yaml have empty strings here.
 type installedBundle struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	HasVenv bool   `json:"has_venv"`
+	Name      string         `json:"name"`
+	Version   string         `json:"version"`
+	HasVenv   bool           `json:"has_venv"`
+	Publisher string         `json:"publisher,omitempty"`
+	Manifest  map[string]any `json:"manifest,omitempty"`
 }
 
 func (b *bundleSkill) listInstalled() []installedBundle {
@@ -152,11 +156,19 @@ func (b *bundleSkill) listInstalled() []installedBundle {
 			}
 			bd := filepath.Join(verDir, ve.Name())
 			_, venvErr := os.Stat(filepath.Join(bd, ".venv"))
-			out = append(out, installedBundle{
+			ib := installedBundle{
 				Name:    ne.Name(),
 				Version: ve.Name(),
 				HasVenv: venvErr == nil,
-			})
+			}
+			// P0a: include manifest payload (publisher / display_name /
+			// tools / requires) when available so dock can surface it
+			// in the marketplace UI without an extra round-trip.
+			if m, err := ReadBundleManifestFromDir(bd); err == nil && m != nil {
+				ib.Publisher = m.Publisher
+				ib.Manifest = m.CapabilitiesForAdvertise()
+			}
+			out = append(out, ib)
 		}
 	}
 	return out
@@ -259,6 +271,15 @@ func (b *bundleSkill) Start(ctx context.Context, runID int64, config json.RawMes
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("stat bundle dir: %w", err)
+	}
+
+	// P0a: if the bundle ships a manifest.yaml, parse it and let it
+	// override the dock-sent BundleConfig (entrypoint, args, env).
+	// Manifest is optional — older bundles without it keep working.
+	if manifest, err := ReadBundleManifestFromDir(bundleDir); err != nil {
+		return nil, fmt.Errorf("manifest: %w", err)
+	} else if manifest != nil {
+		manifest.MergeOntoConfig(&cfg)
 	}
 
 	scriptPath := filepath.Join(bundleDir, filepath.FromSlash(cfg.Entrypoint))
