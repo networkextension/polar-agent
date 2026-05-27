@@ -4,7 +4,9 @@
 //
 // Three commands:
 //
-//   polar-agent login   --server=https://polar.example.com --token=<raw>
+//   polar-agent login   [--server=https://polar.example.com] --token=<raw>
+//       (--server defaults to https://zen.4950.store:2443 — override
+//        at build time with -ldflags "-X main.defaultServer=<url>")
 //   polar-agent status
 //   polar-agent attach  --bot=<bot_user_id> --workdir=.
 //
@@ -161,9 +163,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `polar-agent — local executor for Polar bot users
 
 Usage:
-  polar-agent login    --server=<url> --token=<raw>     # write ~/.polar/agent.toml from an existing agent_token
-  polar-agent register --server=<url> --token=<enroll>  # consume one-time enroll token from /hosts.html; auto-saves agent.toml
-                                                        # add --start to immediately exec attach
+  polar-agent login    [--server=<url>] --token=<raw>     # write ~/.polar/agent.toml from an existing agent_token
+                                                          # --server defaults to https://zen.4950.store:2443
+  polar-agent register [--server=<url>] --token=<enroll>  # consume one-time enroll token from /hosts.html; auto-saves agent.toml
+                                                          # --server defaults to https://zen.4950.store:2443
+                                                          # add --start to immediately exec attach
   polar-agent self-test                                 # smoke: WS handshake + skill.advertise round-trip against the registered host
   polar-agent status                                    # show config + last verify
   polar-agent attach  --bot=<bot_id> --workdir=<path>             # tool-call loop mode
@@ -198,13 +202,16 @@ Config file: ~/.polar/agent.toml
 
 func runLogin(args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
-	server := fs.String("server", "", "Polar server base URL (e.g. https://polar.example.com)")
+	server := fs.String("server", defaultServer, "Polar server base URL (default: "+defaultServer+")")
 	tokenF := fs.String("token", "", "raw agent token from /api/agent/tokens")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	// server has a default now (see defaults.go) — only token is truly
+	// required. Keep the empty-server guard as belt-and-suspenders in
+	// case a downstream build overrides defaultServer to "".
 	if *server == "" || *tokenF == "" {
-		fmt.Fprintln(os.Stderr, "both --server and --token are required")
+		fmt.Fprintln(os.Stderr, "--token is required (--server defaults to "+defaultServer+")")
 		return exitUsage
 	}
 	cfg := AgentConfig{Server: *server, Token: *tokenF}
