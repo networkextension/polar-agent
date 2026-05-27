@@ -136,6 +136,12 @@ func main() {
 	case "register":
 		// Host module register — one-shot consume-enroll-token flow.
 		os.Exit(runRegister(args))
+	case "set-agent-id":
+		// Agent identity v4 migration helper — writes agent_id (+
+		// optional bot_user_id) into an existing ~/.polar/agent.toml
+		// so legacy installs can join the v4 identity model without
+		// re-running register. See doc/arch/agent-identity-v4.md.
+		os.Exit(runSetAgentID(args))
 	case "self-test":
 		os.Exit(runSelfTest(args))
 	case "submit-build":
@@ -168,13 +174,17 @@ Usage:
   polar-agent register [--server=<url>] --token=<enroll>  # consume one-time enroll token from /hosts.html; auto-saves agent.toml
                                                           # --server defaults to https://zen.4950.store:2443
                                                           # add --start to immediately exec attach
+                                                          # v4: server returns agent_id + bot_user_id; both written to agent.toml
+  polar-agent set-agent-id <ag_xxx> [<bot_xxx>]           # migrate legacy install to v4 identity model
+                                                          # writes agent_id (+ optional bot_user_id) into ~/.polar/agent.toml
   polar-agent self-test                                 # smoke: WS handshake + skill.advertise round-trip against the registered host
   polar-agent status                                    # show config + last verify
-  polar-agent attach  --bot=<bot_id> --workdir=<path>             # tool-call loop mode
-  polar-agent attach  --bot=<bot_id> --workdir=<path> --tool=auto  # ask dock for bot's preferred_tool
-  polar-agent attach  --bot=<bot_id> --workdir=<path> --tool=kimi  # passthrough to local kimi-cli
-  polar-agent attach  --bot=<bot_id> --workdir=<path> --tool=claude
-  polar-agent attach  --bot=<bot_id> --workdir=<path> --tool=codex
+  polar-agent attach  [--bot=<bot_id>] --workdir=<path>           # tool-call loop mode
+                                                                  # --bot optional; defaults to bot_user_id from agent.toml (v4)
+  polar-agent attach  [--bot=<bot_id>] --workdir=<path> --tool=auto  # ask dock for bot's preferred_tool
+  polar-agent attach  [--bot=<bot_id>] --workdir=<path> --tool=kimi  # passthrough to local kimi-cli
+  polar-agent attach  [--bot=<bot_id>] --workdir=<path> --tool=claude
+  polar-agent attach  [--bot=<bot_id>] --workdir=<path> --tool=codex
   polar-agent submit-build <ipa> [--project=<id>] [--sign-method=auto|zsign|codesign]
                                                   # iOS: sign + upload IPA to TestFlight
   polar-agent research --workdir=<path> --llm-base-url=<url> --llm-api-key=<key> --llm-model=<id>
@@ -249,16 +259,12 @@ func runStatus(args []string) int {
 
 func runAttach(args []string) int {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
-	bot := fs.String("bot", "", "bot_user_id to attach to")
+	bot := fs.String("bot", "", "bot_user_id to attach to (default: bot_user_id from agent.toml — v4)")
 	workdir := fs.String("workdir", ".", "local working directory the bot may operate on")
 	verbose := fs.Bool("verbose", false, "log each tool call")
 	tool := fs.String("tool", "", "passthrough tool name (kimi/claude/codex/<custom>); empty = tool-call loop")
 	kimi := fs.Bool("kimi", false, "legacy alias for --tool=kimi")
 	if err := fs.Parse(args); err != nil {
-		return exitUsage
-	}
-	if *bot == "" {
-		fmt.Fprintln(os.Stderr, "--bot=<bot_user_id> is required")
 		return exitUsage
 	}
 	if *kimi && *tool == "" {
@@ -269,6 +275,21 @@ func runAttach(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "no config (run `polar-agent login` first): %v\n", err)
 		return exitConfig
+	}
+
+	// v4: --bot is optional. Resolution precedence:
+	//   1. explicit --bot flag (operator override)
+	//   2. cfg.BotUserID (auto-bound by register)
+	//   3. error
+	botSource := "flag"
+	if strings.TrimSpace(*bot) == "" {
+		if cfg.BotUserID != "" {
+			*bot = cfg.BotUserID
+			botSource = "config"
+		} else {
+			fmt.Fprintln(os.Stderr, "--bot required (or run `polar-agent register` to auto-bind)")
+			return exitUsage
+		}
 	}
 
 	// --tool=auto: ask the dock what this bot's preferred_tool is.
@@ -312,7 +333,7 @@ func runAttach(args []string) int {
 	if spec != nil {
 		mode = "passthrough(" + spec.Name + ")"
 	}
-	log.Printf("attach bot=%s workdir=%s server=%s mode=%s", *bot, resolved, cfg.Server, mode)
+	log.Printf("attach bot=%s (source=%s) workdir=%s server=%s mode=%s", *bot, botSource, resolved, cfg.Server, mode)
 
 	// Register the coder skill so the WS handshake's skill.advertise
 	// payload reports the real tool list, AND so skill.start envelopes

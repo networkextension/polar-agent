@@ -8,12 +8,26 @@ import (
 	"strings"
 )
 
-// AgentConfig is the on-disk state of `polar-agent login`. TOML-ish
-// flat key/value (no sections; tiny). We avoid pulling a real TOML
-// dependency for a 2-key file.
+// AgentConfig is the on-disk state of `polar-agent login` (and the
+// post-v4 `polar-agent register` flow). TOML-ish flat key/value (no
+// sections; tiny). We avoid pulling a real TOML dependency for a
+// small file.
+//
+// v4 (see doc/arch/agent-identity-v4.md) adds AgentID + BotUserID:
+//
+//   - AgentID    — server-issued "ag_<32hex>" identity for this agent
+//                  instance. Persisted so reconnects / `attach` carry
+//                  it in the hello frame; absent on legacy installs
+//                  (pre-Phase E) and tolerated.
+//   - BotUserID  — bot the operator wants `attach` to default to.
+//                  Written when the v4 register response includes it
+//                  (auto-create) and read by `attach` when --bot is
+//                  omitted. Absent → operator must pass --bot.
 type AgentConfig struct {
-	Server string
-	Token  string
+	Server    string
+	Token     string
+	AgentID   string // v4: "ag_<32hex>"; empty on legacy installs
+	BotUserID string // v4: default bot for `attach`; empty → require --bot
 }
 
 func configPath() string {
@@ -35,8 +49,18 @@ func (c AgentConfig) Save() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("server = %q\ntoken = %q\n", c.Server, c.Token)
-	return os.WriteFile(path, []byte(body), 0o600)
+	var b strings.Builder
+	fmt.Fprintf(&b, "server = %q\n", c.Server)
+	fmt.Fprintf(&b, "token = %q\n", c.Token)
+	// v4: omit empty so legacy installs round-trip clean and the file
+	// stays minimal until the operator registers under the v4 server.
+	if strings.TrimSpace(c.AgentID) != "" {
+		fmt.Fprintf(&b, "agent_id = %q\n", c.AgentID)
+	}
+	if strings.TrimSpace(c.BotUserID) != "" {
+		fmt.Fprintf(&b, "bot_user_id = %q\n", c.BotUserID)
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 func LoadAgentConfig() (AgentConfig, error) {
@@ -62,6 +86,10 @@ func LoadAgentConfig() (AgentConfig, error) {
 			cfg.Server = val
 		case "token":
 			cfg.Token = val
+		case "agent_id":
+			cfg.AgentID = val
+		case "bot_user_id":
+			cfg.BotUserID = val
 		}
 	}
 	if cfg.Server == "" || cfg.Token == "" {

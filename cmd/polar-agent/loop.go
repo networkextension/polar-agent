@@ -190,6 +190,18 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 		return conn.WriteMessage(websocket.TextMessage, payload)
 	}
 
+	// v4 (see doc/arch/agent-identity-v4.md):
+	//   - agent_id        — primary server-side identity, taken from
+	//                       agent.toml. Omitted on legacy installs
+	//                       (pre-Phase E) so the server falls back to
+	//                       the workspace+token lookup path.
+	//   - machine_uuid_raw — sent every hello so the server can
+	//                       reconcile host_id drift (logic-board swap,
+	//                       VM clone) and discard the raw value
+	//                       immediately. Collected once at boot via
+	//                       hostinfo.Collect()'s sync.Once cache; never
+	//                       re-collected per hello.
+	hi := hostinfo.Collect()
 	hello := map[string]any{
 		"kind":         "hello",
 		"version":      "polar-agent 0.3",
@@ -202,7 +214,16 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 		// boot time. Cached after first call so reconnects don't re-pay
 		// system_profiler's ~600 ms latency on macOS. dock side reads
 		// hello.host_info and persists it on the hosts row.
-		"host_info": hostinfo.Collect(),
+		"host_info": hi,
+	}
+	if strings.TrimSpace(cfg.AgentID) != "" {
+		hello["agent_id"] = cfg.AgentID
+	}
+	if strings.TrimSpace(hi.MachineUUID) != "" {
+		// Wire name is `machine_uuid_raw` (v4); the hostinfo struct
+		// still uses `MachineUUID` internally pending the Phase G
+		// hostinfo refactor.
+		hello["machine_uuid_raw"] = hi.MachineUUID
 	}
 	if spec != nil {
 		hello["tool"] = spec.Name
