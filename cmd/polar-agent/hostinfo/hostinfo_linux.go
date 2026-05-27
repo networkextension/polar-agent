@@ -67,6 +67,30 @@ func collectOS(h *HostInfo) {
 	// if present, AMD via /sys/class/drm. ESXi VMs almost never have
 	// passthrough GPUs so this returns nil in the common path; left
 	// for a follow-up rather than half-implemented in v1.
+
+	// Stable machine fingerprint for dock-side dedup. systemd writes
+	// /etc/machine-id at first boot; on older systems / minimal
+	// containers /var/lib/dbus/machine-id is the fallback. Both are
+	// 32-hex-char machine IDs (NOT the same shape as a UUID, but
+	// stable across reboots and that's what matters).
+	h.MachineUUID = readLinuxMachineID()
+}
+
+// readLinuxMachineID returns the systemd machine-id (or the legacy
+// dbus fallback), trimmed. Empty string when both files are
+// unreadable — dock-side dedup treats empty as "skip".
+func readLinuxMachineID() string {
+	for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(b))
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // readTrim reads a one-line sysfs/procfs file and returns the

@@ -13,11 +13,18 @@ package hostinfo
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// Absolute path so we don't depend on PATH — same launchd-PATH
+// discipline as the darwin collector (see hostinfo_darwin.go).
+const binKenv = "/sbin/kenv"
 
 func collectOS(h *HostInfo) {
 	h.HwModel = sysctlString("hw.model")
@@ -33,6 +40,34 @@ func collectOS(h *HostInfo) {
 	// Kernel: "FreeBSD 14.4-RELEASE arm64" — matches the format used
 	// on darwin/linux.
 	h.Kernel = strings.TrimSpace("FreeBSD " + osRel + " " + h.CPUArch)
+
+	// Stable machine fingerprint. smbios.system.uuid requires the
+	// smbios kld; bare arm64 VMs (like dpaa2) often don't have it
+	// loaded and the kenv read returns empty. /etc/hostid is the
+	// FreeBSD-ism fallback — when present it's a UUID-shaped string
+	// written at hostid(8) init. If both fail, leave empty (dock
+	// side treats empty as "skip dedup", which is correct).
+	h.MachineUUID = collectFreeBSDMachineUUID()
+}
+
+func collectFreeBSDMachineUUID() string {
+	// Primary: smbios.system.uuid via kenv. -q suppresses the "no
+	// such key" stderr noise on systems without the smbios kld.
+	if v := trimNL(execCapture(binKenv, 2*time.Second, "-q", "smbios.system.uuid")); v != "" {
+		return v
+	}
+	// Fallback: hash of /etc/hostid. Hashing rather than emitting the
+	// raw hostid keeps the fingerprint shape (hex string) consistent
+	// with the other OS branches and avoids leaking the raw uuid that
+	// some software treats as somewhat sensitive (license bindings).
+	if b, err := os.ReadFile("/etc/hostid"); err == nil {
+		s := strings.TrimSpace(string(b))
+		if s != "" {
+			sum := sha256.Sum256([]byte(s))
+			return hex.EncodeToString(sum[:])
+		}
+	}
+	return ""
 }
 
 func sysctlString(key string) string {
