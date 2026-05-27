@@ -48,19 +48,30 @@ type registerRequest struct {
 	Name     string `json:"name,omitempty"`
 	HostOS   string `json:"host_os"`
 	HostArch string `json:"host_arch"`
-	// MachineUUID is the stable per-machine fingerprint dock uses to
-	// dedup duplicate `hosts` rows on re-register (token expired,
-	// agent reinstalled, IP changed). See hostinfo.HostInfo.MachineUUID
-	// — empty when the collector failed; dock skips dedup in that case.
-	MachineUUID string `json:"machine_uuid,omitempty"`
+	// MachineUUIDRaw is the stable per-machine fingerprint server uses
+	// to derive host_id = sha256(salt + raw). REQUIRED in v4 (see
+	// doc/arch/agent-identity-v4.md); empty values are rejected by
+	// polar-hosts with a 400. The collector code still lives in
+	// cmd/polar-agent/hostinfo/ — Phase G will refactor that path.
+	MachineUUIDRaw string `json:"machine_uuid_raw,omitempty"`
+	// HostInfo is the full hello.host_info blob (hw_model, cpu_brand,
+	// mem_total, …); v4 dock UPSERTs the matching hosts row from it.
+	HostInfo map[string]any `json:"host_info,omitempty"`
 }
 
+// registerResponse mirrors polar-hosts' v4 /api/hosts/register
+// response. See modules/polar-hosts/internal/hosts/host_handlers.go
+// for the canonical shape. The plugin returns `agent_token_raw` here
+// (the raw bearer the agent stores in agent.toml), distinct from the
+// SDK-level AgentRegisterResponse which calls the same field `token`.
 type registerResponse struct {
-	Host          map[string]any `json:"host"`
-	AgentTokenID  string         `json:"agent_token_id"`
-	AgentTokenRaw string         `json:"agent_token_raw"`
-	WorkspaceID   string         `json:"workspace_id"`
-	Error         string         `json:"error"`
+	AgentID       string `json:"agent_id"`
+	HostID        string `json:"host_id"`
+	BotUserID     string `json:"bot_user_id"`
+	AgentTokenRaw string `json:"agent_token_raw"`
+	Server        string `json:"server"`
+	WorkspaceID   string `json:"workspace_id"`
+	Error         string `json:"error"`
 }
 
 func runRegister(args []string) int {
@@ -116,21 +127,32 @@ func runRegister(args []string) int {
 		saveURL = strings.TrimRight(*server, "/")
 	}
 
-	// Collect the stable machine fingerprint so dock can dedup the
-	// hosts row across re-registers. hostinfo.Collect() is sync.Once
-	// cached so this is cheap-ish; on darwin the first call execs
-	// system_profiler (~600 ms) and ioreg (~30 ms), which is fine for
-	// a one-shot CLI. The 2s timeouts inside each collector cap the
-	// worst case; if a sysctl/ioreg hangs we ship MachineUUID="" and
-	// dock falls back to legacy create. Either way we never block
-	// register past a few seconds.
+	// Collect the stable machine fingerprint + full host facts.
+	// hostinfo.Collect() is sync.Once cached so this is cheap-ish; on
+	// darwin the first call execs system_profiler (~600 ms) and ioreg
+	// (~30 ms), fine for a one-shot CLI. v4: the raw UUID goes on the
+	// wire as `machine_uuid_raw`, hashed server-side, never persisted.
+	// If the collector returned empty, polar-hosts will 400; the
+	// operator's clean error beats a silent fall-through.
 	hi := hostinfo.Collect()
 
+	// Marshal host_info into a map so server can UPSERT individual
+	// columns without us hard-coding the schema here. (Re-marshal of
+	// the hostinfo struct → JSON → map — small payload, runs once.)
+	hostInfoMap := map[string]any{}
+	if raw, err := json.Marshal(hi); err == nil {
+		_ = json.Unmarshal(raw, &hostInfoMap)
+		// Don't double-ship the raw UUID inside host_info; it has its
+		// own top-level field and server never persists raw anyway.
+		delete(hostInfoMap, "machine_uuid")
+	}
+
 	body, _ := json.Marshal(registerRequest{
-		Name:        hostName,
-		HostOS:      runtime.GOOS,
-		HostArch:    runtime.GOARCH,
-		MachineUUID: hi.MachineUUID,
+		Name:           hostName,
+		HostOS:         runtime.GOOS,
+		HostArch:       runtime.GOARCH,
+		MachineUUIDRaw: hi.MachineUUID,
+		HostInfo:       hostInfoMap,
 	})
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -192,28 +214,32 @@ func runRegister(args []string) int {
 		return exitNet
 	}
 
+	// v4: persist agent_id + bot_user_id so reconnects carry agent_id
+	// in the hello frame and `attach` no longer requires --bot. If
+	// server is from a v3-era polar-hosts these fields come back empty
+	// — we tolerate that (omitempty on the writer) but log a hint.
 	cfg := AgentConfig{
-		Server: saveURL,
-		Token:  parsed.AgentTokenRaw,
+		Server:    saveURL,
+		Token:     parsed.AgentTokenRaw,
+		AgentID:   strings.TrimSpace(parsed.AgentID),
+		BotUserID: strings.TrimSpace(parsed.BotUserID),
+	}
+	if cfg.AgentID == "" {
+		fmt.Fprintln(os.Stderr, "warning: register response missing agent_id — is the polar-hosts plugin pre-v4? hello frames will fall back to legacy lookup.")
 	}
 	if err := cfg.Save(); err != nil {
 		fmt.Fprintf(os.Stderr, "saved register response but failed to write agent.toml: %v\n", err)
 		return exitConfig
 	}
 
-	hostNameOut := ""
-	if n, ok := parsed.Host["name"].(string); ok {
-		hostNameOut = n
-	}
-	hostID := ""
-	if id, ok := parsed.Host["id"].(string); ok {
-		hostID = id
-	}
 	mode := "remote enroll"
 	if *local {
 		mode = "local bootstrap"
 	}
-	fmt.Printf("✓ %s: host=%s id=%s\n", mode, hostNameOut, hostID)
+	fmt.Printf("✓ %s: agent_id=%s host_id=%s\n", mode, cfg.AgentID, strings.TrimSpace(parsed.HostID))
+	if cfg.BotUserID != "" {
+		fmt.Printf("✓ bot_user_id=%s (auto-bound by server)\n", cfg.BotUserID)
+	}
 	fmt.Printf("✓ saved server=%s + agent_token to %s\n", saveURL, configPath())
 
 	if *start {
@@ -227,6 +253,8 @@ func runRegister(args []string) int {
 			fmt.Fprintf(os.Stderr, "exec attach: %v\n", err)
 			return exitNet
 		}
+	} else if cfg.BotUserID != "" {
+		fmt.Println("  next: polar-agent attach (no --bot needed; bot_user_id read from agent.toml)")
 	} else {
 		fmt.Println("  next: polar-agent attach --bot=<bot_id> --workdir=<path> [--tool=<name>]")
 	}
