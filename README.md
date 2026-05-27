@@ -22,8 +22,9 @@ Cross-platform pre-built tarballs ship in the [umbrella release bundle](https://
 
 ```bash
 # 1. Mint an enroll token from /hosts.html on your dock host.
-# 2. Register this machine:
-polar-agent register --server=https://zen.example.com --token=<enroll>
+# 2. Register this machine (--server defaults to https://zen.4950.store:2443;
+#    pass --server=<url> only if you're on a private fork / different host):
+polar-agent register --token=<enroll>
 
 # 3. Attach a bot to a working directory:
 polar-agent attach --bot=bot_<id> --workdir=/path/to/repo --tool=claude
@@ -32,14 +33,24 @@ polar-agent attach --bot=bot_<id> --workdir=/path/to/repo --tool=claude
 polar-agent self-test
 ```
 
+The default `--server` for `register` / `login` is baked at build time.
+Forks / private deployments rebuild without editing source via:
+
+```bash
+go build -ldflags "-X main.defaultServer=https://your-dock.example:443" \
+    ./cmd/polar-agent
+```
+
 `agent.toml` lives at `~/.polar/agent.toml` after register; subsequent commands read server URL + agent_token from there.
 
 ## Subcommands
 
 ```
-polar-agent login    --server=<url> --token=<raw>     # write agent.toml from an existing agent_token
-polar-agent register --server=<url> --token=<enroll>  # consume one-time enroll token from /hosts.html
-                                                      # add --start to immediately exec attach
+polar-agent login    [--server=<url>] --token=<raw>     # write agent.toml from an existing agent_token
+                                                        # --server defaults to https://zen.4950.store:2443
+polar-agent register [--server=<url>] --token=<enroll>  # consume one-time enroll token from /hosts.html
+                                                        # --server defaults to https://zen.4950.store:2443
+                                                        # add --start to immediately exec attach
 polar-agent self-test                                 # WS handshake + skill.advertise smoke
 polar-agent status                                    # print config + last verify
 polar-agent attach   --bot=<id> --workdir=<path> [--tool=auto|kimi|claude|codex]

@@ -10,13 +10,16 @@ package main
 //       agent_token in one shot. No token paste, no admin login. Only
 //       enabled when dock was started with POLAR_ALLOW_LOCAL_BOOTSTRAP=true.
 //
-//   polar-agent register --server=<url> --token=<enroll-token>
+//   polar-agent register [--server=<url>] --token=<enroll-token>
 //       Remote / multi-machine path. The admin mints a one-time
 //       enroll token via the dashboard (/hosts.html → Add Host →
 //       copy); this CLI consumes it via the existing
 //       /api/hosts/register endpoint and writes the resulting
 //       permanent agent_token to ~/.polar/agent.toml. Unchanged from
 //       the original Host module P0 flow.
+//       --server defaults to the canonical control plane
+//       (see defaults.go); forks can override at build time via
+//       -ldflags "-X main.defaultServer=<url>".
 //
 // Both modes save agent.toml with the URL the agent should use for
 // its subsequent WS attach. Local mode saves http://127.0.0.1:8080
@@ -62,7 +65,7 @@ type registerResponse struct {
 
 func runRegister(args []string) int {
 	fs := flag.NewFlagSet("register", flag.ContinueOnError)
-	server := fs.String("server", "", "Polar dock base URL (remote flow only; --local ignores this)")
+	server := fs.String("server", defaultServer, "Polar dock base URL (remote flow only; --local ignores this; default: "+defaultServer+")")
 	token := fs.String("token", "", "one-time enroll token from /hosts.html Add Host (remote flow)")
 	local := fs.Bool("local", false, "co-located bootstrap: hit dock on 127.0.0.1 directly, no token needed")
 	localURL := fs.String("local-url", localBootstrapDefaultURL, "dock URL when --local (default http://127.0.0.1:8080)")
@@ -77,10 +80,15 @@ func runRegister(args []string) int {
 		fmt.Fprintln(os.Stderr, "--local and --token are mutually exclusive")
 		return exitUsage
 	}
+	// server has a default now (see defaults.go) — only token is truly
+	// required in remote mode. Keep the empty-server guard as
+	// belt-and-suspenders for downstream builds that override
+	// defaultServer to "".
 	if !*local && (strings.TrimSpace(*server) == "" || strings.TrimSpace(*token) == "") {
-		fmt.Fprintln(os.Stderr, "register requires either --local OR --server=<url> --token=<enroll>")
+		fmt.Fprintln(os.Stderr, "register requires either --local OR --token=<enroll>")
 		fmt.Fprintln(os.Stderr, "  --local: co-located bootstrap (dock + agent same machine)")
 		fmt.Fprintln(os.Stderr, "  --token: remote flow, get the enroll token from /hosts.html → Add Host")
+		fmt.Fprintln(os.Stderr, "  --server is optional (defaults to "+defaultServer+")")
 		return exitUsage
 	}
 
