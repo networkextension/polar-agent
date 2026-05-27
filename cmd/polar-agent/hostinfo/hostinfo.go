@@ -16,6 +16,7 @@ package hostinfo
 
 import (
 	"bufio"
+	"net"
 	"runtime"
 	"strconv"
 	"strings"
@@ -60,6 +61,13 @@ type HostInfo struct {
 	// treat empty as "skip dedup, fall back to legacy create" — inventing
 	// a UUID would be worse than nothing (it would collide across machines).
 	MachineUUID string `json:"machine_uuid,omitempty"`
+
+	// IPv4ByIface maps interface name → IPv4 address (first non-link-local
+	// addr per interface). Refreshed on every Collect() call — interfaces
+	// can come and go (DHCP renew, wg up/down, USB tether). Operators
+	// use this to see "which network paths can reach this host" without
+	// SSH'ing in. IPv6 + link-local + loopback intentionally skipped.
+	IPv4ByIface map[string]string `json:"ipv4_by_iface,omitempty"`
 }
 
 // GPU describes one (or the primary, if there are multiple) GPU.
@@ -88,7 +96,56 @@ func Collect() HostInfo {
 		collectOS(&h)
 		cached = h
 	})
-	return cached
+	// Static hw facts come from the cache. IPs refresh every call —
+	// they change with DHCP/wg/USB-tether faster than the cache TTL.
+	out := cached
+	out.IPv4ByIface = collectIPv4ByIface()
+	return out
+}
+
+// collectIPv4ByIface returns interface_name → IPv4 dotted-quad for every
+// UP, non-loopback interface that has at least one global IPv4 addr.
+// Skips: loopback (127/8), link-local (169.254/16), interfaces marked
+// down. Multi-IP interfaces return the first global IPv4 (deterministic
+// because net.Interfaces() is ordered by index).
+//
+// Errors are swallowed: a missing/permission-denied netlink read should
+// not block the agent's hello.
+func collectIPv4ByIface() map[string]string {
+	out := map[string]string{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			ip4 := ip.To4()
+			if ip4 == nil {
+				continue
+			}
+			// Skip 169.254.x link-local; loopback already filtered via flag.
+			if ip4[0] == 169 && ip4[1] == 254 {
+				continue
+			}
+			out[ifi.Name] = ip4.String()
+			break // first global IPv4 per iface; deterministic
+		}
+	}
+	return out
 }
 
 // --- Pure parsers below — OS-neutral, unit-tested from any platform. ---
