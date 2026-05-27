@@ -77,12 +77,33 @@ type WireGuardConfig struct {
 	PollIntervalSec int `json:"poll_interval_sec,omitempty"`
 }
 
-type wireguardSkill struct{}
+type wireguardSkill struct {
+	// priv is detected once at construction and captures the exec
+	// prefix (direct vs sudo -n) used for every wg-quick / wg
+	// invocation. Detection result is stable for the process
+	// lifetime; restart the agent if the operator changes sudoers.
+	priv detectedPrivilege
+}
 
 // NewWireGuardSkill returns the WireGuard skill on unix. The stub
 // in wireguard_stub.go returns nil on Windows so main.go can call
 // this unconditionally.
-func NewWireGuardSkill() Skill { return &wireguardSkill{} }
+//
+// Privilege detection happens here (~one or two cheap `--help` execs).
+// We always return a non-nil skill so the diagnostic Capabilities
+// payload reaches dock even when the agent can't actually bring an
+// iface up — that's how the UI tells "WireGuard works" from
+// "WireGuard needs sudoers".
+func NewWireGuardSkill() Skill {
+	return &wireguardSkill{priv: detectWGPrivilege(defaultProber)}
+}
+
+// newWireGuardSkillForTest is the test-only constructor that lets a
+// stub prober drive the detection branches. Lowercased so it doesn't
+// leak into the public API.
+func newWireGuardSkillForTest(probe cmdProber) *wireguardSkill {
+	return &wireguardSkill{priv: detectWGPrivilege(probe)}
+}
 
 func (w *wireguardSkill) Kind() SkillKind { return KindWireGuard }
 func (w *wireguardSkill) Version() string { return "1.0" }
@@ -99,15 +120,20 @@ func (w *wireguardSkill) Capabilities() map[string]any {
 		"default_poll_interval_sec": wgDefaultPollIntervalSec,
 		"min_poll_interval_sec":     wgMinPollIntervalSec,
 		"max_poll_interval_sec":     wgMaxPollIntervalSec,
+		// Privilege state — surfaced so dock UI can render "agent has
+		// root" vs "agent needs sudoers" vs "wg-quick not installed"
+		// without re-probing from dock side.
+		"privilege_mode": string(w.priv.Mode),
+		"exec_user":      w.priv.ExecUser,
 	}
-	if path, err := exec.LookPath("wg-quick"); err == nil {
+	if w.priv.WgQuickPath != "" {
 		caps["installed"] = true
-		caps["binary_path"] = path
+		caps["binary_path"] = w.priv.WgQuickPath
 	} else {
 		caps["installed"] = false
 	}
-	if path, err := exec.LookPath("wg"); err == nil {
-		caps["wg_path"] = path
+	if w.priv.WgPath != "" {
+		caps["wg_path"] = w.priv.WgPath
 	} else {
 		// Without `wg` we can still bring up the iface via wg-quick
 		// (it uses the kernel module directly on Linux 5.6+) but the
@@ -115,10 +141,19 @@ func (w *wireguardSkill) Capabilities() map[string]any {
 		// "install wireguard-tools to enable monitoring".
 		caps["supports_peer_monitor"] = false
 	}
+	if w.priv.Mode == privilegeNone && w.priv.SudoersHint != "" {
+		caps["sudoers_hint"] = w.priv.SudoersHint
+	}
 	return caps
 }
 
 func (w *wireguardSkill) Validate(config json.RawMessage) error {
+	if w.priv.NotInstalled {
+		return errors.New("wireguard: wg-quick not on PATH (install wireguard-tools: `apt install wireguard` / `pkg install wireguard-tools` / `brew install wireguard-tools`)")
+	}
+	if w.priv.Mode == privilegeNone {
+		return fmt.Errorf("wireguard: agent has no root path. Add a sudoers entry and restart polar-agent — %s", w.priv.SudoersHint)
+	}
 	if len(config) == 0 || string(config) == "null" {
 		return nil
 	}
@@ -166,10 +201,13 @@ func (w *wireguardSkill) Start(ctx context.Context, runID int64, config json.Raw
 		return nil, errors.New("wireguard: config_text is required")
 	}
 
-	binaryPath, err := exec.LookPath("wg-quick")
-	if err != nil {
-		return nil, fmt.Errorf("wireguard: wg-quick not on PATH (brew install wireguard-tools, or apt install wireguard)")
+	if w.priv.NotInstalled {
+		return nil, errors.New("wireguard: wg-quick not on PATH (install wireguard-tools)")
 	}
+	if w.priv.Mode == privilegeNone {
+		return nil, fmt.Errorf("wireguard: no root path — %s", w.priv.SudoersHint)
+	}
+	binaryPath := w.priv.WgQuickPath
 
 	iface := strings.TrimSpace(cfg.InterfaceName)
 	if iface == "" {
@@ -195,7 +233,8 @@ func (w *wireguardSkill) Start(ctx context.Context, runID int64, config json.Raw
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, binaryPath, "up", iface)
+	upName, upArgs := w.priv.wgCmdArgs(binaryPath, "up", iface)
+	cmd := exec.CommandContext(runCtx, upName, upArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = os.Remove(confPath)
@@ -239,6 +278,7 @@ func (w *wireguardSkill) Start(ctx context.Context, runID int64, config json.Raw
 		runCtx:          runCtx,
 		pollIntervalSec: pollSec,
 		pollEnabled:     pollEnabled,
+		priv:            w.priv,
 	}
 
 	run.send(Event{Kind: EventState, Data: map[string]any{
@@ -276,6 +316,11 @@ type wireguardRun struct {
 
 	pollIntervalSec int  // seconds; clamped at Validate
 	pollEnabled     bool // false when operator passed PollIntervalSec < 0
+
+	// priv carries the detected privilege prefix into stop() and the
+	// peer-monitor poller. Copied from the skill at Start time so a
+	// hypothetical future re-detect doesn't race an in-flight run.
+	priv detectedPrivilege
 
 	stopOnce sync.Once
 	upDone   sync.Once // wg-quick up returns once iface is up; track that for clarity
@@ -349,7 +394,8 @@ func (r *wireguardRun) stop(reason string) error {
 		// event.
 		downCtx, downCancel := context.WithTimeout(context.Background(), wgDefaultStopWindow)
 		defer downCancel()
-		downCmd := exec.CommandContext(downCtx, r.binary, "down", r.iface)
+		downName, downArgs := r.priv.wgCmdArgs(r.binary, "down", r.iface)
+		downCmd := exec.CommandContext(downCtx, downName, downArgs...)
 		downOut, _ := downCmd.CombinedOutput()
 		if len(downOut) > 0 {
 			r.send(Event{Kind: EventLog, Data: map[string]any{
