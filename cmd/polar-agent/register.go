@@ -35,6 +35,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/networkextension/polar-agent/cmd/polar-agent/hostinfo"
 )
 
 const localBootstrapDefaultURL = "http://127.0.0.1:8080"
@@ -43,6 +45,11 @@ type registerRequest struct {
 	Name     string `json:"name,omitempty"`
 	HostOS   string `json:"host_os"`
 	HostArch string `json:"host_arch"`
+	// MachineUUID is the stable per-machine fingerprint dock uses to
+	// dedup duplicate `hosts` rows on re-register (token expired,
+	// agent reinstalled, IP changed). See hostinfo.HostInfo.MachineUUID
+	// — empty when the collector failed; dock skips dedup in that case.
+	MachineUUID string `json:"machine_uuid,omitempty"`
 }
 
 type registerResponse struct {
@@ -101,10 +108,21 @@ func runRegister(args []string) int {
 		saveURL = strings.TrimRight(*server, "/")
 	}
 
+	// Collect the stable machine fingerprint so dock can dedup the
+	// hosts row across re-registers. hostinfo.Collect() is sync.Once
+	// cached so this is cheap-ish; on darwin the first call execs
+	// system_profiler (~600 ms) and ioreg (~30 ms), which is fine for
+	// a one-shot CLI. The 2s timeouts inside each collector cap the
+	// worst case; if a sysctl/ioreg hangs we ship MachineUUID="" and
+	// dock falls back to legacy create. Either way we never block
+	// register past a few seconds.
+	hi := hostinfo.Collect()
+
 	body, _ := json.Marshal(registerRequest{
-		Name:     hostName,
-		HostOS:   runtime.GOOS,
-		HostArch: runtime.GOARCH,
+		Name:        hostName,
+		HostOS:      runtime.GOOS,
+		HostArch:    runtime.GOARCH,
+		MachineUUID: hi.MachineUUID,
 	})
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

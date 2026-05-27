@@ -25,6 +25,10 @@ const (
 	binSysctl          = "/usr/sbin/sysctl"
 	binSwVers          = "/usr/bin/sw_vers"
 	binSystemProfiler  = "/usr/sbin/system_profiler"
+	// ioreg lives in /usr/sbin (same as sysctl + system_profiler) — and
+	// /usr/sbin is missing from our launchd plist's PATH, see the comment
+	// above the const block.
+	binIoreg           = "/usr/sbin/ioreg"
 )
 
 func collectOS(h *HostInfo) {
@@ -50,6 +54,12 @@ func collectOS(h *HostInfo) {
 	if gpu := parseDarwinSystemProfilerGPU(execCapture(binSystemProfiler, 5*time.Second, "SPDisplaysDataType")); gpu != nil {
 		h.GPU = gpu
 	}
+
+	// Stable machine fingerprint for dock-side dedup. ioreg is fast
+	// (~30 ms) but cap at 2s in case IOKit is wedged — same defensive
+	// timeout as sysctl. Empty result is fine: dock treats it as
+	// "skip dedup" rather than inventing an identifier.
+	h.MachineUUID = parseDarwinIOPlatformUUID(execCapture(binIoreg, 2*time.Second, "-rd1", "-c", "IOPlatformExpertDevice"))
 }
 
 // sysctlString reads one string sysctl key via -n. Returns "" on error.

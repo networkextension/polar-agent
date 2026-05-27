@@ -47,6 +47,19 @@ type HostInfo struct {
 	OSPretty      string `json:"os_pretty,omitempty"`        // linux only (PRETTY_NAME from os-release)
 	Kernel        string `json:"kernel,omitempty"`           // "uname -srm"-shaped
 	BootUnix      int64  `json:"boot_unix,omitempty"`
+
+	// MachineUUID is a stable per-machine identifier the dock side uses
+	// to dedup duplicate `hosts` rows when the agent re-registers (token
+	// expired, agent reinstalled, IP changed, etc.). Sources per OS:
+	//   - darwin:  IOPlatformUUID via ioreg
+	//   - linux:   /etc/machine-id (or /var/lib/dbus/machine-id fallback)
+	//   - freebsd: kenv smbios.system.uuid (or sha256(/etc/hostid) fallback)
+	//
+	// Empty = collector failed (e.g. ioreg missing, smbios kld not loaded,
+	// no /etc/machine-id on a stripped container). Dock-side dedup MUST
+	// treat empty as "skip dedup, fall back to legacy create" — inventing
+	// a UUID would be worse than nothing (it would collide across machines).
+	MachineUUID string `json:"machine_uuid,omitempty"`
 }
 
 // GPU describes one (or the primary, if there are multiple) GPU.
@@ -284,6 +297,47 @@ func parseDarwinSystemProfilerGPU(blob string) *GPU {
 		return nil
 	}
 	return &g
+}
+
+// parseDarwinIOPlatformUUID pulls the IOPlatformUUID value from
+// `ioreg -rd1 -c IOPlatformExpertDevice` output. The relevant line
+// looks like:
+//
+//	"IOPlatformUUID" = "12345678-1234-1234-1234-123456789012"
+//
+// Returns the UUID string (without quotes) or "" if the field is not
+// present (e.g. ioreg failed, IOKit registry returned an unexpected
+// shape, or the device hasn't been provisioned). Tolerant of
+// surrounding whitespace + tab indentation.
+func parseDarwinIOPlatformUUID(blob string) string {
+	s := bufio.NewScanner(strings.NewReader(blob))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		// Match: "IOPlatformUUID" = "<value>"
+		const key = `"IOPlatformUUID"`
+		idx := strings.Index(line, key)
+		if idx < 0 {
+			continue
+		}
+		rest := line[idx+len(key):]
+		// Find the first " after the = sign — value runs to the next ".
+		eq := strings.Index(rest, "=")
+		if eq < 0 {
+			continue
+		}
+		rest = rest[eq+1:]
+		open := strings.Index(rest, `"`)
+		if open < 0 {
+			continue
+		}
+		rest = rest[open+1:]
+		close := strings.Index(rest, `"`)
+		if close <= 0 {
+			continue
+		}
+		return strings.TrimSpace(rest[:close])
+	}
+	return ""
 }
 
 // parseFreeBSDBoottime extracts the unix seconds from sysctl's

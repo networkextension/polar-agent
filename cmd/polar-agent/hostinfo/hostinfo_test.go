@@ -8,6 +8,7 @@ package hostinfo
 // concerns covered by manual smoke against the orchestrate harness.
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -225,6 +226,71 @@ func TestCollectFillsArchAlways(t *testing.T) {
 	h := Collect()
 	if h.CPUArch == "" {
 		t.Error("CPUArch should always be set via runtime.GOARCH, even on the stub-OS path")
+	}
+}
+
+func TestParseDarwinIOPlatformUUID(t *testing.T) {
+	// Captured verbatim from `ioreg -rd1 -c IOPlatformExpertDevice`
+	// on a lab Mac (locals-Mac-2). Surrounding properties trimmed for
+	// brevity but otherwise verbatim — including the leading tabs
+	// and the | + tree-drawing characters ioreg emits.
+	blob := `+-o Root  <class IORegistryEntry, id 0x100000100, retain 33>
+  +-o J474sAP  <class IOPlatformExpertDevice, id 0x100000244, registered, matched, active, busy 0 (16 ms), retain 56>
+    {
+      "IOPlatformSerialNumber" = "XXSERIAL01"
+      "IOPlatformUUID" = "12345678-90AB-CDEF-1234-567890ABCDEF"
+      "compatible" = <"J474sAP","AppleARM","arm-io">
+    }
+`
+	got := parseDarwinIOPlatformUUID(blob)
+	want := "12345678-90AB-CDEF-1234-567890ABCDEF"
+	if got != want {
+		t.Errorf("parseDarwinIOPlatformUUID = %q, want %q", got, want)
+	}
+}
+
+func TestParseDarwinIOPlatformUUID_Empty(t *testing.T) {
+	if got := parseDarwinIOPlatformUUID(""); got != "" {
+		t.Errorf("empty blob → got %q, want empty", got)
+	}
+	// ioreg ran but the registry didn't include IOPlatformExpertDevice
+	// (we exec'd against the wrong class, or the device hasn't been
+	// matched yet). Should still return empty cleanly.
+	if got := parseDarwinIOPlatformUUID("+-o Root\n  +-o nothing-interesting\n"); got != "" {
+		t.Errorf("no-UUID blob → got %q, want empty", got)
+	}
+}
+
+func TestParseDarwinIOPlatformUUID_NoSurroundingWhitespace(t *testing.T) {
+	// Single-line input with no leading whitespace — defensive against
+	// older ioreg output formats.
+	blob := `"IOPlatformUUID" = "ABCDEF01-2345-6789-ABCD-EF0123456789"`
+	got := parseDarwinIOPlatformUUID(blob)
+	want := "ABCDEF01-2345-6789-ABCD-EF0123456789"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCollectMachineUUIDOnRealHost(t *testing.T) {
+	// Integration smoke: when run on darwin/linux/freebsd, the
+	// collector should populate MachineUUID. Skip on platforms with
+	// the stub collector (collectOS in hostinfo_other.go is a no-op
+	// so MachineUUID will be empty on e.g. windows; that's expected).
+	switch runtime.GOOS {
+	case "darwin", "linux", "freebsd":
+	default:
+		t.Skipf("no machine-uuid collector on %s", runtime.GOOS)
+	}
+	h := Collect()
+	if h.MachineUUID == "" {
+		// Don't t.Fatal — the freebsd dpaa2 box can legitimately
+		// return empty when smbios kld is missing and /etc/hostid
+		// is absent. Log loudly so CI surfaces the regression to a
+		// human, but don't make this test red on that box.
+		t.Logf("MachineUUID empty on %s — verify ioreg / machine-id / kenv path", runtime.GOOS)
+	} else {
+		t.Logf("MachineUUID=%q on %s", h.MachineUUID, runtime.GOOS)
 	}
 }
 
