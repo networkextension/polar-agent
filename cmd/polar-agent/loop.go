@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/networkextension/polar-agent/cmd/polar-agent/hostinfo"
 	"github.com/networkextension/polar-agent/cmd/polar-agent/skills"
 )
 
@@ -197,6 +198,11 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 		"host_os":      runtime.GOOS,
 		"host_arch":    runtime.GOARCH,
 		"host_name":    hostName(),
+		// Static host facts — model, OS version, CPU/memory/GPU shape,
+		// boot time. Cached after first call so reconnects don't re-pay
+		// system_profiler's ~600 ms latency on macOS. dock side reads
+		// hello.host_info and persists it on the hosts row.
+		"host_info": hostinfo.Collect(),
 	}
 	if spec != nil {
 		hello["tool"] = spec.Name
