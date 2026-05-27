@@ -56,13 +56,13 @@ type wgIfaceStatus struct {
 type wgPeerStatus struct {
 	PublicKey           string `json:"public_key"`
 	HasPresharedKey     bool   `json:"has_preshared_key"`
-	Endpoint            string `json:"endpoint,omitempty"`    // "host:port"; empty when "(none)"
-	AllowedIPs          string `json:"allowed_ips,omitempty"` // comma-separated CIDRs; empty when "(none)"
-	LatestHandshakeUnix int64  `json:"latest_handshake_unix"` // 0 = never
-	HandshakeAgeSec     int64  `json:"handshake_age_sec"`     // derived; -1 when never
+	Endpoint            string `json:"endpoint,omitempty"`               // "host:port"; empty when "(none)"
+	AllowedIPs          string `json:"allowed_ips,omitempty"`            // comma-separated CIDRs; empty when "(none)"
+	LatestHandshakeUnix int64  `json:"latest_handshake_unix"`            // 0 = never
+	HandshakeAgeSec     int64  `json:"handshake_age_sec"`                // derived; -1 when never
 	BytesRx             int64  `json:"bytes_rx"`
 	BytesTx             int64  `json:"bytes_tx"`
-	KeepaliveSec        int    `json:"keepalive_sec"` // 0 = off
+	KeepaliveSec        int    `json:"keepalive_sec"`                    // 0 = off
 }
 
 // parseWGShowDump turns the TSV output of `wg show <iface> dump` into
@@ -160,18 +160,27 @@ func atoi64Safe(s string) int64 {
 	return n
 }
 
-// runWGShowDump exec's `wg show <iface> dump` with a short timeout.
-// Returns ("", err) if `wg` isn't on PATH OR if the iface isn't up
-// (wg-quick failure already emitted its own log line). Caller decides
-// whether to skip the sample or surface a warning.
-func runWGShowDump(ctx context.Context, iface string) ([]byte, error) {
-	wgBin, err := exec.LookPath("wg")
-	if err != nil {
-		return nil, fmt.Errorf("wg not on PATH: %w", err)
+// runWGShowDump exec's `wg show <iface> dump` with a short timeout,
+// using priv.ExecPrefix when the agent needs sudo to reach the kernel
+// WG state. Returns an error if `wg` isn't on PATH or the iface
+// isn't up. The caller decides whether to skip the sample or surface
+// a warning.
+func runWGShowDump(ctx context.Context, priv detectedPrivilege, iface string) ([]byte, error) {
+	wgBin := priv.WgPath
+	if wgBin == "" {
+		// Best-effort fallback for in-process tests / detectors that
+		// didn't precompute WgPath. Production NewWireGuardSkill always
+		// fills it.
+		var err error
+		wgBin, err = exec.LookPath("wg")
+		if err != nil {
+			return nil, fmt.Errorf("wg not on PATH: %w", err)
+		}
 	}
 	cctx, cancel := context.WithTimeout(ctx, wgPollExecTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, wgBin, "show", iface, "dump")
+	name, args := priv.wgCmdArgs(wgBin, "show", iface, "dump")
+	cmd := exec.CommandContext(cctx, name, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		// stderr from `wg show` carries the kernel reason (e.g. "Unable
@@ -228,7 +237,7 @@ func (r *wireguardRun) pollPeers(ctx context.Context) {
 // surfaced as EventLog{monitor} per tick because they're transient
 // and the operator wants to see them.
 func (r *wireguardRun) samplePeersOnce(ctx context.Context) bool {
-	out, err := runWGShowDump(ctx, r.iface)
+	out, err := runWGShowDump(ctx, r.priv, r.iface)
 	if err != nil {
 		if strings.Contains(err.Error(), "wg not on PATH") {
 			return false
