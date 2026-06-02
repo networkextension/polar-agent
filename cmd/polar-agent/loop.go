@@ -293,6 +293,11 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 		}
 	}()
 
+	// P3 pull dispatch: drain any runs that were enqueued while we were
+	// offline. Safe even when dock's pull mode is off — the queue is then
+	// empty and claim returns 204 immediately.
+	go drainClaims(ctx, cfg, workdir, verbose)
+
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -306,6 +311,9 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 			continue
 		}
 		switch head.Kind {
+		case "task.wake":
+			// Durable-dispatch doorbell — pull queued runs now.
+			go drainClaims(ctx, cfg, workdir, verbose)
 		case "tool_call":
 			var call toolCall
 			if err := json.Unmarshal(raw, &call); err != nil {
