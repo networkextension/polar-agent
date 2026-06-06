@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -48,6 +49,19 @@ func collectOS(h *HostInfo) {
 	// written at hostid(8) init. If both fail, leave empty (dock
 	// side treats empty as "skip dedup", which is correct).
 	h.MachineUUID = collectFreeBSDMachineUUID()
+
+	// Root-fs capacity (Tier-2 static fact). statfs, no exec. Zero on error.
+	h.DiskTotalBytes = diskTotalBytes("/")
+}
+
+// diskTotalBytes returns the total capacity (bytes) of the filesystem
+// containing path via statfs. Zero on error.
+func diskTotalBytes(path string) uint64 {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0
+	}
+	return st.Blocks * uint64(st.Bsize)
 }
 
 func collectFreeBSDMachineUUID() string {

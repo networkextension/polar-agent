@@ -13,6 +13,7 @@ package hostinfo
 import (
 	"os"
 	"strings"
+	"syscall"
 )
 
 func collectOS(h *HostInfo) {
@@ -74,6 +75,22 @@ func collectOS(h *HostInfo) {
 	// 32-hex-char machine IDs (NOT the same shape as a UUID, but
 	// stable across reboots and that's what matters).
 	h.MachineUUID = readLinuxMachineID()
+
+	// Root-fs capacity (Tier-2 static fact). statfs, no exec. Zero on error.
+	h.DiskTotalBytes = diskTotalBytes("/")
+	// Wi-Fi MAC / battery / fan: Linux best-effort left for a follow-up
+	// (sysfs /sys/class/net/*/wireless, /sys/class/power_supply/BAT*,
+	// /sys/class/hwmon/*/fan*_input). The fleet is darwin-only today.
+}
+
+// diskTotalBytes returns the total capacity (bytes) of the filesystem
+// containing path via statfs. Zero on error.
+func diskTotalBytes(path string) uint64 {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0
+	}
+	return st.Blocks * uint64(st.Bsize)
 }
 
 // readLinuxMachineID returns the systemd machine-id (or the legacy

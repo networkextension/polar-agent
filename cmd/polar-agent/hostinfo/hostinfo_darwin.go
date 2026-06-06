@@ -11,6 +11,7 @@ import (
 	"context"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -29,6 +30,8 @@ const (
 	// /usr/sbin is missing from our launchd plist's PATH, see the comment
 	// above the const block.
 	binIoreg           = "/usr/sbin/ioreg"
+	binNetworksetup    = "/usr/sbin/networksetup" // Wi-Fi MAC
+	binPmset           = "/usr/bin/pmset"         // battery presence
 )
 
 func collectOS(h *HostInfo) {
@@ -60,6 +63,38 @@ func collectOS(h *HostInfo) {
 	// timeout as sysctl. Empty result is fine: dock treats it as
 	// "skip dedup" rather than inventing an identifier.
 	h.MachineUUID = parseDarwinIOPlatformUUID(execCapture(binIoreg, 2*time.Second, "-rd1", "-c", "IOPlatformExpertDevice"))
+
+	// --- Tier-1/2 static facts (P0). All defensive: empty/nil on failure. ---
+
+	// Wi-Fi MAC — stable HW identity that survives IP churn.
+	h.WifiMAC = parseDarwinWifiMAC(execCapture(binNetworksetup, 2*time.Second, "-listallhardwareports"))
+
+	// Root-fs capacity via statfs (no exec).
+	h.DiskTotalBytes = diskTotalBytes("/")
+
+	// Battery presence (laptops yes, desktops no). pmset is fast (~20 ms).
+	hb := parseDarwinHasBattery(execCapture(binPmset, 2*time.Second, "-g", "batt"))
+	h.HasBattery = &hb
+
+	// Friendly model name + fan presence. system_profiler SPHardwareDataType
+	// is another ~600 ms exec (cap 5s like the GPU one); the sync.Once cache
+	// absorbs it. Fan presence is a model heuristic — no no-sudo SMC source.
+	if model := parseDarwinModelName(execCapture(binSystemProfiler, 5*time.Second, "SPHardwareDataType")); model != "" {
+		h.ModelName = model
+		hf := !isFanlessModel(model)
+		h.HasFan = &hf
+	}
+}
+
+// diskTotalBytes returns the total capacity of the filesystem containing
+// path, in bytes, via statfs (Blocks * block size). Zero on error — a
+// failed statfs shouldn't block the agent's hello.
+func diskTotalBytes(path string) uint64 {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0
+	}
+	return st.Blocks * uint64(st.Bsize)
 }
 
 // sysctlString reads one string sysctl key via -n. Returns "" on error.
