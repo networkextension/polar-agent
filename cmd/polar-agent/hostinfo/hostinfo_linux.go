@@ -78,9 +78,78 @@ func collectOS(h *HostInfo) {
 
 	// Root-fs capacity (Tier-2 static fact). statfs, no exec. Zero on error.
 	h.DiskTotalBytes = diskTotalBytes("/")
-	// Wi-Fi MAC / battery / fan: Linux best-effort left for a follow-up
-	// (sysfs /sys/class/net/*/wireless, /sys/class/power_supply/BAT*,
-	// /sys/class/hwmon/*/fan*_input). The fleet is darwin-only today.
+
+	// Tier-1/2 static facts via sysfs (pure file reads, no exec).
+	h.WifiMAC = linuxWifiMAC()
+	h.HasBattery = linuxHasBattery() // *bool: nil when /sys/class/power_supply is unreadable
+	h.HasFan = linuxHasFan()         // *bool: nil when /sys/class/hwmon is unreadable
+}
+
+// linuxWifiMAC returns the lowercase MAC of the first wireless interface, or
+// "" when there's none. A net interface is wireless iff
+// /sys/class/net/<iface>/wireless/ exists (the cfg80211 marker).
+func linuxWifiMAC() string {
+	ents, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		n := e.Name()
+		if _, err := os.Stat("/sys/class/net/" + n + "/wireless"); err != nil {
+			continue
+		}
+		if mac := readTrim("/sys/class/net/" + n + "/address"); mac != "" {
+			return strings.ToLower(mac)
+		}
+	}
+	return ""
+}
+
+// linuxHasBattery reports whether any /sys/class/power_supply/* has type
+// "Battery" (laptops yes, servers/VMs no). Returns nil (unknown) when the
+// directory can't be read at all, vs &false when it's readable but empty.
+func linuxHasBattery() *bool {
+	ents, err := os.ReadDir("/sys/class/power_supply")
+	if err != nil {
+		return nil
+	}
+	found := false
+	for _, e := range ents {
+		if strings.TrimSpace(readTrim("/sys/class/power_supply/"+e.Name()+"/type")) == "Battery" {
+			found = true
+			break
+		}
+	}
+	return &found
+}
+
+// linuxHasFan reports whether any hwmon device exposes a fan tachometer
+// (/sys/class/hwmon/*/fan*_input). nil (unknown) when /sys/class/hwmon is
+// unreadable. Note: a fan with no readable sensor reads as &false — the best
+// signal sysfs offers without privileged probing.
+func linuxHasFan() *bool {
+	ents, err := os.ReadDir("/sys/class/hwmon")
+	if err != nil {
+		return nil
+	}
+	found := false
+	for _, e := range ents {
+		files, err := os.ReadDir("/sys/class/hwmon/" + e.Name())
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			n := f.Name()
+			if strings.HasPrefix(n, "fan") && strings.HasSuffix(n, "_input") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	return &found
 }
 
 // diskTotalBytes returns the total capacity (bytes) of the filesystem
