@@ -8,6 +8,7 @@ package hostinfo
 // concerns covered by manual smoke against the orchestrate harness.
 
 import (
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -214,11 +215,15 @@ func TestParseFreeBSDBoottime_Malformed(t *testing.T) {
 }
 
 func TestCollectIsCached(t *testing.T) {
-	// First call may be slow; second must return identical value.
+	// First call may be slow; second must return identical static facts.
+	// IPv4ByIface is intentionally refreshed every call (interfaces roam),
+	// so it's excluded — and HostInfo contains maps/pointers, so compare
+	// with reflect.DeepEqual rather than ==.
 	h1 := Collect()
 	h2 := Collect()
-	if h1 != h2 {
-		t.Errorf("Collect should be cached: %+v vs %+v", h1, h2)
+	h1.IPv4ByIface, h2.IPv4ByIface = nil, nil
+	if !reflect.DeepEqual(h1, h2) {
+		t.Errorf("Collect should cache static facts: %+v vs %+v", h1, h2)
 	}
 }
 

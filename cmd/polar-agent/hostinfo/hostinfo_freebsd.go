@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -48,6 +49,30 @@ func collectOS(h *HostInfo) {
 	// written at hostid(8) init. If both fail, leave empty (dock
 	// side treats empty as "skip dedup", which is correct).
 	h.MachineUUID = collectFreeBSDMachineUUID()
+
+	// Root-fs capacity (Tier-2 static fact). statfs, no exec. Zero on error.
+	h.DiskTotalBytes = diskTotalBytes("/")
+
+	// Battery presence via ACPI: hw.acpi.battery.units is the battery count.
+	// Empty (sysctl absent → no ACPI, e.g. arm64 server boards) → leave nil
+	// (unknown); "0" → &false; >0 → &true. Wi-Fi MAC + fan are skipped on
+	// FreeBSD (no clean sysfs; the lab's only FreeBSD box is a headless
+	// arm64 server with neither).
+	if v := sysctlString("hw.acpi.battery.units"); v != "" {
+		n, _ := strconv.Atoi(v)
+		has := n > 0
+		h.HasBattery = &has
+	}
+}
+
+// diskTotalBytes returns the total capacity (bytes) of the filesystem
+// containing path via statfs. Zero on error.
+func diskTotalBytes(path string) uint64 {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0
+	}
+	return st.Blocks * uint64(st.Bsize)
 }
 
 func collectFreeBSDMachineUUID() string {

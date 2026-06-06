@@ -68,6 +68,34 @@ type HostInfo struct {
 	// use this to see "which network paths can reach this host" without
 	// SSH'ing in. IPv6 + link-local + loopback intentionally skipped.
 	IPv4ByIface map[string]string `json:"ipv4_by_iface,omitempty"`
+
+	// --- Tier-1/2 static facts (host-info 3-tier plan, P0). All best-effort:
+	// a collector that can't read its source leaves the field zero/nil so the
+	// UI simply doesn't render that chip. ---
+
+	// ModelName is the marketing model ("MacBook Pro", "Mac mini") — friendlier
+	// than HwModel's board id ("Mac15,10"). darwin only (system_profiler).
+	ModelName string `json:"model_name,omitempty"`
+
+	// WifiMAC is the Wi-Fi interface hardware (MAC) address, lowercase
+	// colon-separated. Stable hardware identity that survives DHCP/IP churn.
+	// Empty when there's no Wi-Fi adapter or the lookup failed.
+	WifiMAC string `json:"wifi_mac,omitempty"`
+
+	// DiskTotalBytes is the total capacity of the root filesystem ("/") in
+	// bytes (statfs Blocks*Bsize). Capacity, not free space — it's a static
+	// fact. Zero on statfs failure.
+	DiskTotalBytes uint64 `json:"disk_total_bytes,omitempty"`
+
+	// HasBattery / HasFan are tri-state: nil = "couldn't determine", &true /
+	// &false = looked and found. Pointers so omitempty distinguishes unknown
+	// from a definite false (a Mac mini genuinely has no battery).
+	//   - HasBattery: darwin via `pmset -g batt` (InternalBattery present)
+	//   - HasFan: heuristic — only fanless Macs are MacBook Air / MacBook(12");
+	//     everything else (desktops + MacBook Pro) has a fan. No no-sudo SMC
+	//     fan-count source exists, so this is derived from ModelName.
+	HasBattery *bool `json:"has_battery,omitempty"`
+	HasFan     *bool `json:"has_fan,omitempty"`
 }
 
 // GPU describes one (or the primary, if there are multiple) GPU.
@@ -416,6 +444,76 @@ func parseFreeBSDBoottime(blob string) int64 {
 		return 0
 	}
 	return bt
+}
+
+// parseDarwinWifiMAC pulls the Wi-Fi hardware address from
+// `networksetup -listallhardwareports` output, which is a series of
+// 3-line blocks:
+//
+//	Hardware Port: Wi-Fi
+//	Device: en0
+//	Ethernet Address: 70:72:fe:f3:5a:62
+//
+// We find the block whose "Hardware Port:" is exactly "Wi-Fi" and return
+// its "Ethernet Address" (lowercased). Returns "" when there's no Wi-Fi
+// port (Ethernet-only Mac, VM) or the address line is "N/A".
+func parseDarwinWifiMAC(blob string) string {
+	s := bufio.NewScanner(strings.NewReader(blob))
+	inWifi := false
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		switch {
+		case strings.HasPrefix(line, "Hardware Port:"):
+			port := strings.TrimSpace(strings.TrimPrefix(line, "Hardware Port:"))
+			inWifi = port == "Wi-Fi"
+		case inWifi && strings.HasPrefix(line, "Ethernet Address:"):
+			mac := strings.TrimSpace(strings.TrimPrefix(line, "Ethernet Address:"))
+			if mac == "" || strings.EqualFold(mac, "N/A") {
+				return ""
+			}
+			return strings.ToLower(mac)
+		}
+	}
+	return ""
+}
+
+// parseDarwinModelName pulls "Model Name" from `system_profiler
+// SPHardwareDataType` output (line "      Model Name: MacBook Pro").
+// Returns "" if absent.
+func parseDarwinModelName(blob string) string {
+	s := bufio.NewScanner(strings.NewReader(blob))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if strings.HasPrefix(line, "Model Name:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Model Name:"))
+		}
+	}
+	return ""
+}
+
+// parseDarwinHasBattery reports whether `pmset -g batt` output names an
+// internal battery — present on laptops, absent on Mac mini/Studio/Pro.
+func parseDarwinHasBattery(blob string) bool {
+	return strings.Contains(blob, "InternalBattery")
+}
+
+// isFanlessModel reports whether a marketing model name is one of Apple's
+// fanless designs. There's no no-sudo SMC fan-count API, so fan *presence*
+// is inferred: only the MacBook Air (all generations) and the 12-inch
+// MacBook are fanless; every other Mac (desktops + MacBook Pro) has a fan.
+func isFanlessModel(modelName string) bool {
+	m := strings.ToLower(strings.TrimSpace(modelName))
+	if m == "" {
+		return false
+	}
+	if strings.Contains(m, "macbook air") {
+		return true
+	}
+	// The 12" MacBook is exactly "MacBook" (no "Pro"/"Air" suffix).
+	if m == "macbook" {
+		return true
+	}
+	return false
 }
 
 // trimNL is a sysctl shorthand — values come back with a trailing \n
