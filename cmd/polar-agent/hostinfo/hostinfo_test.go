@@ -315,3 +315,26 @@ func TestParseDarwinSystemProfilerGPU_VendorStripped(t *testing.T) {
 		t.Errorf("vendor: %q", g.Vendor)
 	}
 }
+
+func TestParseWGShowPublicKeys(t *testing.T) {
+	// `wg show all public-key` is tab-separated: "<iface>\t<base64key>".
+	blob := "wg0\tabc123def456GHIjklMNOpqrSTUvwxYZ0123456789+/=\n" +
+		"wgc0\tZZZ999aaa888bbb777ccc666ddd555eee444fff333+/=\n"
+	got := parseWGShowPublicKeys(blob)
+	want := map[string]string{
+		"wg0":  "abc123def456GHIjklMNOpqrSTUvwxYZ0123456789+/=",
+		"wgc0": "ZZZ999aaa888bbb777ccc666ddd555eee444fff333+/=",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v want %#v", got, want)
+	}
+}
+
+func TestParseWGShowPublicKeys_SkipsEmptyAndNone(t *testing.T) {
+	blob := "\nwg0\t(none)\nwgbad\nwg1\tValidKey123+/=\n   \n"
+	got := parseWGShowPublicKeys(blob)
+	want := map[string]string{"wg1": "ValidKey123+/="}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v want %#v", got, want)
+	}
+}

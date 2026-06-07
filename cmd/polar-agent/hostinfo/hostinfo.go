@@ -17,6 +17,7 @@ package hostinfo
 import (
 	"bufio"
 	"net"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,9 +28,9 @@ import (
 // dock side reads out of hello.host_info. omitempty everywhere so
 // per-OS missing fields don't pollute the JSON.
 type HostInfo struct {
-	HwModel       string `json:"hw_model,omitempty"`
-	HwVendor      string `json:"hw_vendor,omitempty"`
-	Virt          string `json:"virt,omitempty"` // linux only: "vmware" | "kvm" | "xen" | "hyperv" | "none"
+	HwModel  string `json:"hw_model,omitempty"`
+	HwVendor string `json:"hw_vendor,omitempty"`
+	Virt     string `json:"virt,omitempty"` // linux only: "vmware" | "kvm" | "xen" | "hyperv" | "none"
 
 	CPUBrand     string `json:"cpu_brand,omitempty"`
 	CPUArch      string `json:"cpu_arch,omitempty"`
@@ -43,10 +44,10 @@ type HostInfo struct {
 
 	OSName        string `json:"os_name,omitempty"`
 	OSVersion     string `json:"os_version,omitempty"`
-	OSBuild       string `json:"os_build,omitempty"`         // darwin only
-	OSReleaseType string `json:"os_release_type,omitempty"`  // darwin only ("NonUI" for headless macOS)
-	OSPretty      string `json:"os_pretty,omitempty"`        // linux only (PRETTY_NAME from os-release)
-	Kernel        string `json:"kernel,omitempty"`           // "uname -srm"-shaped
+	OSBuild       string `json:"os_build,omitempty"`        // darwin only
+	OSReleaseType string `json:"os_release_type,omitempty"` // darwin only ("NonUI" for headless macOS)
+	OSPretty      string `json:"os_pretty,omitempty"`       // linux only (PRETTY_NAME from os-release)
+	Kernel        string `json:"kernel,omitempty"`          // "uname -srm"-shaped
 	BootUnix      int64  `json:"boot_unix,omitempty"`
 
 	// MachineUUID is a stable per-machine identifier the dock side uses
@@ -96,6 +97,14 @@ type HostInfo struct {
 	//     fan-count source exists, so this is derived from ModelName.
 	HasBattery *bool `json:"has_battery,omitempty"`
 	HasFan     *bool `json:"has_fan,omitempty"`
+
+	// WGPubkeys maps WireGuard interface name → base64 public key, for every
+	// wg interface up on this host. Refreshed every Collect() call (wg up/down
+	// changes it, same as IPv4ByIface). Dock uses it to cross-link this host to
+	// its polar-wg device row (wg_devices.pubkey) — see the host_id backfill in
+	// doc/arch/wg-host-crosslink.md. Best-effort: empty when `wg` isn't on PATH
+	// or the agent lacks privilege to read the interface (no sudo -n).
+	WGPubkeys map[string]string `json:"wg_pubkeys,omitempty"`
 }
 
 // GPU describes one (or the primary, if there are multiple) GPU.
@@ -128,6 +137,58 @@ func Collect() HostInfo {
 	// they change with DHCP/wg/USB-tether faster than the cache TTL.
 	out := cached
 	out.IPv4ByIface = collectIPv4ByIface()
+	out.WGPubkeys = collectWGPubkeys()
+	return out
+}
+
+// collectWGPubkeys returns wg_iface → base64 public key for every WireGuard
+// interface up on the host. It shells out to `wg show all public-key`, falling
+// back to `sudo -n wg` (the same passwordless-sudo path the wireguard skill
+// relies on) when a direct read is denied. All failures are swallowed — a host
+// with no wg, no `wg` binary, or no privilege simply reports no keys, and the
+// dock-side cross-link is skipped. Returns nil (omitempty) when nothing found.
+func collectWGPubkeys() map[string]string {
+	if _, err := exec.LookPath("wg"); err != nil {
+		return nil
+	}
+	out, err := exec.Command("wg", "show", "all", "public-key").Output()
+	if err != nil || len(out) == 0 {
+		// Likely a privilege error — retry via passwordless sudo, best-effort.
+		if out2, err2 := exec.Command("sudo", "-n", "wg", "show", "all", "public-key").Output(); err2 == nil {
+			out = out2
+		} else {
+			return nil
+		}
+	}
+	m := parseWGShowPublicKeys(string(out))
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// parseWGShowPublicKeys parses `wg show all public-key` output, whose lines are
+// "<iface>\t<base64-pubkey>" (one per wg interface). Lines without a tab or with
+// an empty key (off interface) are skipped. Pure for unit testing.
+func parseWGShowPublicKeys(blob string) map[string]string {
+	out := map[string]string{}
+	s := bufio.NewScanner(strings.NewReader(blob))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" {
+			continue
+		}
+		tab := strings.IndexAny(line, "\t ")
+		if tab <= 0 {
+			continue
+		}
+		iface := strings.TrimSpace(line[:tab])
+		key := strings.TrimSpace(line[tab+1:])
+		if iface == "" || key == "" || key == "(none)" {
+			continue
+		}
+		out[iface] = key
+	}
 	return out
 }
 
@@ -346,14 +407,14 @@ func parseDarwinSwVers(blob string) (name, version, build, releaseType string) {
 //
 // system_profiler emits sections like:
 //
-//   Graphics/Displays:
+//	Graphics/Displays:
 //
-//       Apple M3 Max:
-//         Chipset Model: Apple G15X
-//         Type: GPU
-//         Bus: Built-In
-//         Total Number of Cores: 40
-//         Vendor: Apple (0x106b)
+//	    Apple M3 Max:
+//	      Chipset Model: Apple G15X
+//	      Type: GPU
+//	      Bus: Built-In
+//	      Total Number of Cores: 40
+//	      Vendor: Apple (0x106b)
 //
 // We only need the first GPU's three values.
 func parseDarwinSystemProfilerGPU(blob string) *GPU {
