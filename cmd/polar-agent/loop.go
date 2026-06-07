@@ -219,6 +219,13 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 	if strings.TrimSpace(cfg.AgentID) != "" {
 		hello["agent_id"] = cfg.AgentID
 	}
+	if strings.TrimSpace(cfg.HostID) != "" {
+		// Platform-issued host identity, persisted in agent.toml. dock uses
+		// it (with the mesh IP in host_info.ipv4_by_iface) to stamp
+		// wg_devices.host_id for the WG↔Hosts cross-link without reading the
+		// WG public key (unreadable on wg-mac NE boxes).
+		hello["host_id"] = cfg.HostID
+	}
 	if strings.TrimSpace(hi.MachineUUID) != "" {
 		// Wire name is `machine_uuid_raw` (v4); the hostinfo struct
 		// still uses `MachineUUID` internally pending the Phase G

@@ -223,6 +223,9 @@ func runRegister(args []string) int {
 		Token:     parsed.AgentTokenRaw,
 		AgentID:   strings.TrimSpace(parsed.AgentID),
 		BotUserID: strings.TrimSpace(parsed.BotUserID),
+		// Persist the platform-issued host_id so it survives restarts and
+		// rides in every hello (WG↔Hosts cross-link). doc/arch/wg-host-crosslink.md.
+		HostID: strings.TrimSpace(parsed.HostID),
 	}
 	if cfg.AgentID == "" {
 		fmt.Fprintln(os.Stderr, "warning: register response missing agent_id — is the polar-hosts plugin pre-v4? hello frames will fall back to legacy lookup.")

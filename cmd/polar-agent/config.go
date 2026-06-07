@@ -16,18 +16,26 @@ import (
 // v4 (see doc/arch/agent-identity-v4.md) adds AgentID + BotUserID:
 //
 //   - AgentID    — server-issued "ag_<32hex>" identity for this agent
-//                  instance. Persisted so reconnects / `attach` carry
-//                  it in the hello frame; absent on legacy installs
-//                  (pre-Phase E) and tolerated.
+//     instance. Persisted so reconnects / `attach` carry
+//     it in the hello frame; absent on legacy installs
+//     (pre-Phase E) and tolerated.
 //   - BotUserID  — bot the operator wants `attach` to default to.
-//                  Written when the v4 register response includes it
-//                  (auto-create) and read by `attach` when --bot is
-//                  omitted. Absent → operator must pass --bot.
+//     Written when the v4 register response includes it
+//     (auto-create) and read by `attach` when --bot is
+//     omitted. Absent → operator must pass --bot.
 type AgentConfig struct {
 	Server    string
 	Token     string
 	AgentID   string // v4: "ag_<32hex>"; empty on legacy installs
 	BotUserID string // v4: default bot for `attach`; empty → require --bot
+	// HostID is the server-issued host identity (host_id =
+	// sha256(salt+machine_uuid)). The platform 下发s it in the register
+	// response; we persist it so it survives agent restarts and rides in
+	// every hello frame — which lets dock stamp wg_devices.host_id for the
+	// WG↔Hosts UI cross-link (doc/arch/wg-host-crosslink.md) without
+	// needing to read the WG public key (unreadable on wg-mac NE boxes).
+	// Empty on legacy installs; self-healed on the next register.
+	HostID string
 }
 
 func configPath() string {
@@ -60,6 +68,9 @@ func (c AgentConfig) Save() error {
 	if strings.TrimSpace(c.BotUserID) != "" {
 		fmt.Fprintf(&b, "bot_user_id = %q\n", c.BotUserID)
 	}
+	if strings.TrimSpace(c.HostID) != "" {
+		fmt.Fprintf(&b, "host_id = %q\n", c.HostID)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -90,6 +101,8 @@ func LoadAgentConfig() (AgentConfig, error) {
 			cfg.AgentID = val
 		case "bot_user_id":
 			cfg.BotUserID = val
+		case "host_id":
+			cfg.HostID = val
 		}
 	}
 	if cfg.Server == "" || cfg.Token == "" {
