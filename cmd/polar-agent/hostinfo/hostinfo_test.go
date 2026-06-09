@@ -8,11 +8,38 @@ package hostinfo
 // concerns covered by manual smoke against the orchestrate harness.
 
 import (
+	"net"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestClassifyIPv6(t *testing.T) {
+	cases := []struct {
+		ip            string
+		wantKeep      bool
+		wantPrivate   bool
+	}{
+		{"2401:db00:1234:5678::1", true, false}, // global unicast → keep, public
+		{"2001:4860:4860::8888", true, false},   // global (Google DNS) → public
+		{"fd12:3456:789a::1", true, true},       // unique-local fc00::/7 → keep, private
+		{"fc00::1", true, true},                 // unique-local lower bound
+		{"fe80::1", false, false},               // link-local → skip
+		{"::1", false, false},                   // loopback → skip
+		{"ff02::1", false, false},               // multicast → skip
+		{"192.168.1.10", false, false},          // IPv4 → handled elsewhere
+		{"", false, false},                      // junk
+	}
+	for _, c := range cases {
+		ip := net.ParseIP(c.ip) // nil for "" — classifyIPv6 tolerates nil
+		keep, private := classifyIPv6(ip)
+		if keep != c.wantKeep || private != c.wantPrivate {
+			t.Errorf("classifyIPv6(%q) = (keep=%v, private=%v), want (%v, %v)",
+				c.ip, keep, private, c.wantKeep, c.wantPrivate)
+		}
+	}
+}
 
 func TestParseLinuxOSRelease(t *testing.T) {
 	blob := `NAME="Ubuntu"

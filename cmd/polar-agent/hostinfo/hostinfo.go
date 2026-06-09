@@ -67,8 +67,17 @@ type HostInfo struct {
 	// addr per interface). Refreshed on every Collect() call — interfaces
 	// can come and go (DHCP renew, wg up/down, USB tether). Operators
 	// use this to see "which network paths can reach this host" without
-	// SSH'ing in. IPv6 + link-local + loopback intentionally skipped.
+	// SSH'ing in. IPv4 link-local + loopback intentionally skipped.
 	IPv4ByIface map[string]string `json:"ipv4_by_iface,omitempty"`
+
+	// IPv6ByIface maps interface name → its global/ULA IPv6 addresses, each
+	// flagged `private`. Unlike IPv4 (one addr/iface) an interface often has
+	// several IPv6 (a global + a ULA + privacy-extension temporaries), so this
+	// is a list per iface. `private` is true for unique-local (fc00::/7); false
+	// for global unicast — so the UI/operator can tell a routable address from
+	// a LAN-only one. Link-local (fe80::/10), loopback and multicast are
+	// skipped (same spirit as IPv4ByIface). Refreshed every Collect().
+	IPv6ByIface map[string][]IPv6Addr `json:"ipv6_by_iface,omitempty"`
 
 	// --- Tier-1/2 static facts (host-info 3-tier plan, P0). All best-effort:
 	// a collector that can't read its source leaves the field zero/nil so the
@@ -107,6 +116,13 @@ type HostInfo struct {
 	WGPubkeys map[string]string `json:"wg_pubkeys,omitempty"`
 }
 
+// IPv6Addr is one IPv6 address on an interface, annotated with whether it's a
+// private (unique-local, fc00::/7) vs a public (global unicast) address.
+type IPv6Addr struct {
+	Addr    string `json:"addr"`
+	Private bool   `json:"private"`
+}
+
 // GPU describes one (or the primary, if there are multiple) GPU.
 // VRAM/unified memory size deliberately omitted in v1 — on Apple
 // Silicon it's shared with main RAM and on ESXi VMs it's usually
@@ -137,6 +153,7 @@ func Collect() HostInfo {
 	// they change with DHCP/wg/USB-tether faster than the cache TTL.
 	out := cached
 	out.IPv4ByIface = collectIPv4ByIface()
+	out.IPv6ByIface = collectIPv6ByIface()
 	out.WGPubkeys = collectWGPubkeys()
 	return out
 }
@@ -232,6 +249,58 @@ func collectIPv4ByIface() map[string]string {
 			}
 			out[ifi.Name] = ip4.String()
 			break // first global IPv4 per iface; deterministic
+		}
+	}
+	return out
+}
+
+// classifyIPv6 decides whether an IPv6 address is worth reporting and whether
+// it's private. keep is false for loopback, link-local, multicast and anything
+// that isn't global-unicast scope (which, in Go's classification, includes both
+// global addresses and unique-local fc00::/7). private is true only for
+// unique-local (net.IP.IsPrivate ⇒ fc00::/7 on v6). Pure — unit-tested.
+func classifyIPv6(ip net.IP) (keep, private bool) {
+	if ip == nil || ip.To4() != nil { // IPv4 (or junk) handled elsewhere
+		return false, false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || !ip.IsGlobalUnicast() {
+		return false, false
+	}
+	return true, ip.IsPrivate()
+}
+
+// collectIPv6ByIface returns interface_name → its reportable IPv6 addresses
+// (global + unique-local), each flagged private. Mirrors collectIPv4ByIface but
+// keeps ALL matching addrs per iface (v6 commonly has several). Link-local,
+// loopback and multicast are skipped. Errors are swallowed.
+func collectIPv6ByIface() map[string][]IPv6Addr {
+	out := map[string][]IPv6Addr{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			keep, private := classifyIPv6(ip)
+			if !keep {
+				continue
+			}
+			out[ifi.Name] = append(out[ifi.Name], IPv6Addr{Addr: ip.String(), Private: private})
 		}
 	}
 	return out
