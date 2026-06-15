@@ -142,6 +142,10 @@ func main() {
 		// so legacy installs can join the v4 identity model without
 		// re-running register. See doc/arch/agent-identity-v4.md.
 		os.Exit(runSetAgentID(args))
+	case "models":
+		// List the models the per-agent LLM proxy token may use (P2).
+		// Verifies register persisted usable proxy creds.
+		os.Exit(runModels(args))
 	case "self-test":
 		os.Exit(runSelfTest(args))
 	case "submit-build":
@@ -179,6 +183,7 @@ Usage:
                                                           # writes agent_id (+ optional bot_user_id) into ~/.polar/agent.toml
   polar-agent self-test                                 # smoke: WS handshake + skill.advertise round-trip against the registered host
   polar-agent status                                    # show config + last verify
+  polar-agent models                                    # list models the per-agent LLM proxy token can use (P2)
   polar-agent attach  [--bot=<bot_id>] --workdir=<path>           # tool-call loop mode
                                                                   # --bot optional; defaults to bot_user_id from agent.toml (v4)
   polar-agent attach  [--bot=<bot_id>] --workdir=<path> --tool=auto  # ask dock for bot's preferred_tool
