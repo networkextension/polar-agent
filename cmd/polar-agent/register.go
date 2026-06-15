@@ -71,7 +71,11 @@ type registerResponse struct {
 	AgentTokenRaw string `json:"agent_token_raw"`
 	Server        string `json:"server"`
 	WorkspaceID   string `json:"workspace_id"`
-	Error         string `json:"error"`
+	// Per-agent LLM proxy creds (P2). Empty on pre-P2 servers; tolerated.
+	ProxyToken   string `json:"proxy_token"`
+	ProxyBaseURL string `json:"proxy_base_url"`
+	DefaultModel string `json:"default_model"`
+	Error        string `json:"error"`
 }
 
 func runRegister(args []string) int {
@@ -226,6 +230,10 @@ func runRegister(args []string) int {
 		// Persist the platform-issued host_id so it survives restarts and
 		// rides in every hello (WG↔Hosts cross-link). doc/arch/wg-host-crosslink.md.
 		HostID: strings.TrimSpace(parsed.HostID),
+		// P2: persist the per-agent LLM proxy creds (empty on pre-P2 servers).
+		ProxyToken:   strings.TrimSpace(parsed.ProxyToken),
+		ProxyBaseURL: strings.TrimSpace(parsed.ProxyBaseURL),
+		DefaultModel: strings.TrimSpace(parsed.DefaultModel),
 	}
 	if cfg.AgentID == "" {
 		fmt.Fprintln(os.Stderr, "warning: register response missing agent_id — is the polar-hosts plugin pre-v4? hello frames will fall back to legacy lookup.")
@@ -242,6 +250,9 @@ func runRegister(args []string) int {
 	fmt.Printf("✓ %s: agent_id=%s host_id=%s\n", mode, cfg.AgentID, strings.TrimSpace(parsed.HostID))
 	if cfg.BotUserID != "" {
 		fmt.Printf("✓ bot_user_id=%s (auto-bound by server)\n", cfg.BotUserID)
+	}
+	if cfg.hasProxyCreds() {
+		fmt.Printf("✓ per-agent LLM proxy token stored (base=%s, model=%s)\n", cfg.ProxyBaseURL, cfg.DefaultModel)
 	}
 	fmt.Printf("✓ saved server=%s + agent_token to %s\n", saveURL, configPath())
 

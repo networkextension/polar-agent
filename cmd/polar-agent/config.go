@@ -36,6 +36,23 @@ type AgentConfig struct {
 	// needing to read the WG public key (unreadable on wg-mac NE boxes).
 	// Empty on legacy installs; self-healed on the next register.
 	HostID string
+	// Per-agent LLM proxy credentials (P2 of
+	// doc/arch/agent-proxy-and-task-dispatch.md). Dock mints a durable
+	// `agent:<agent_id>` proxy token at register and returns it here; the
+	// agent persists it so any LLM call it originates (not just a
+	// dock-pushed research envelope, which already carries its own per-run
+	// or per-agent token) routes through the dock proxy under THIS agent's
+	// identity — billed, audited, and revocable per agent. All three are
+	// empty on legacy servers / pre-P2 installs and tolerated.
+	ProxyToken   string // bearer for the dock LLM proxy (polar_proxy_…)
+	ProxyBaseURL string // proxy base, ends just before /chat/completions
+	DefaultModel string // alias to send when the caller has no preference
+}
+
+// hasProxyCreds reports whether register returned usable per-agent proxy
+// credentials.
+func (c AgentConfig) hasProxyCreds() bool {
+	return strings.TrimSpace(c.ProxyToken) != "" && strings.TrimSpace(c.ProxyBaseURL) != ""
 }
 
 func configPath() string {
@@ -71,6 +88,15 @@ func (c AgentConfig) Save() error {
 	if strings.TrimSpace(c.HostID) != "" {
 		fmt.Fprintf(&b, "host_id = %q\n", c.HostID)
 	}
+	if strings.TrimSpace(c.ProxyToken) != "" {
+		fmt.Fprintf(&b, "proxy_token = %q\n", c.ProxyToken)
+	}
+	if strings.TrimSpace(c.ProxyBaseURL) != "" {
+		fmt.Fprintf(&b, "proxy_base_url = %q\n", c.ProxyBaseURL)
+	}
+	if strings.TrimSpace(c.DefaultModel) != "" {
+		fmt.Fprintf(&b, "default_model = %q\n", c.DefaultModel)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -103,6 +129,12 @@ func LoadAgentConfig() (AgentConfig, error) {
 			cfg.BotUserID = val
 		case "host_id":
 			cfg.HostID = val
+		case "proxy_token":
+			cfg.ProxyToken = val
+		case "proxy_base_url":
+			cfg.ProxyBaseURL = val
+		case "default_model":
+			cfg.DefaultModel = val
 		}
 	}
 	if cfg.Server == "" || cfg.Token == "" {
