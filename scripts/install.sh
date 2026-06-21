@@ -63,6 +63,12 @@ echo ">> polar-agent installer — os=$GOOS arch=$ARCH name=\"$NAME\" server=$SE
 BINDIR="$HOME/.local/bin"
 BIN="$BINDIR/polar-agent"
 mkdir -p "$BINDIR"
+# When run from inside an unpacked release pkg, a platform binary sits next to
+# this script — prefer it so the pkg is self-contained (no network fetch).
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+if [ -z "${POLAR_AGENT_BIN:-}" ] && [ -x "$SELF_DIR/polar-agent" ] && [ "$SELF_DIR/polar-agent" != "$BIN" ]; then
+  POLAR_AGENT_BIN="$SELF_DIR/polar-agent"
+fi
 if [ -n "${POLAR_AGENT_BIN:-}" ]; then
   echo ">> using staged binary $POLAR_AGENT_BIN"
   cp "$POLAR_AGENT_BIN" "$BIN"
