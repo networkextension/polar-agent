@@ -1,0 +1,100 @@
+# polar-agent runtime image. Linux operators run this with three
+# env vars (POLAR_DOCK_URL / POLAR_AGENT_TOKEN / POLAR_BOT_IDS)
+# and the multi-bot attach loop is up. Mac operators stick with
+# the install.sh path — Mac has Xcode/iOS builds that need to run
+# directly on the host, can't be in a container.
+#
+# Image carries:
+#   /usr/local/bin/polar-agent     statically-linked Go binary
+#   /usr/local/bin/git             apt
+#   /usr/local/bin/uv              official curl|sh
+#   ~/.local/share/uv/...          kimi-cli installed via uv tool
+#   /usr/local/bin/{node,npm,npx}  Node.js LTS
+#   /usr/lib/node_modules/...      claude-code + codex-cli (npm i -g)
+#   /usr/local/bin/entrypoint.sh   reads env, login + attach
+#
+# Run:
+#   docker run -d --name polar-agent \
+#     -e POLAR_DOCK_URL=https://your.polar.host \
+#     -e POLAR_AGENT_TOKEN=polar_agent_xxx \
+#     -e POLAR_BOT_IDS=bot_kimi,bot_claude \
+#     -e POLAR_BOT_TOOLS=kimi,claude  \    # optional, same order as IDs
+#     -v ~/work:/work \                     # workdir for coder output
+#     -e KIMI_API_KEY=sk-... -e ANTHROPIC_API_KEY=... \
+#     ghcr.io/networkextension/polar-agent:latest
+
+# ──────────────────────────────────────────────────────────────────
+# Stage 1: cross-compile polar-agent for $TARGETPLATFORM
+# ──────────────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /work
+RUN apk add --no-cache git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags='-s -w' -o /polar-agent ./cmd/polar-agent
+
+# ──────────────────────────────────────────────────────────────────
+# Final: ubuntu (NOT alpine — claude binary is glibc-linked + breaks
+# on musl). ubuntu:22.04 is the smallest LTS that has Node 22 in
+# the official nodesource repo + Python 3.10 for uv.
+# ──────────────────────────────────────────────────────────────────
+FROM ubuntu:22.04 AS runtime
+
+# Avoid every apt prompt + tzdata setup
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Core: tini for signal handling, git for project pushes, ca-certs
+# for outbound HTTPS (LLM APIs etc.), curl for the bootstrappers.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      tini \
+      git \
+      curl \
+      ca-certificates \
+      tzdata \
+      python3 \
+      xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv (kimi-cli's package manager) — pinned to system /usr/local/bin
+# so non-root entrypoint can find it.
+RUN curl -fsSL https://astral.sh/uv/install.sh -o /tmp/uv-install.sh \
+ && env UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh \
+ && rm /tmp/uv-install.sh \
+ && uv --version
+
+# Node.js LTS — install from nodesource so we can `npm i -g` without
+# fighting permission errors. nodesource v22 covers x64 + arm64.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
+# Coder CLIs. claude-code + codex-cli + (optionally) kimi-cli via uv.
+# Install at image-build time so the operator's first attach
+# doesn't have to wait for npm/uv downloads. Failures abort the
+# image build (better than letting a broken image into the registry).
+RUN npm install -g @anthropic-ai/claude-code @openai/codex \
+ && uv tool install kimi-cli
+
+# Make sure uv-installed tools are on PATH (uv tool install writes
+# to /root/.local/bin by default; symlink for clarity).
+RUN ln -sf /root/.local/bin/kimi /usr/local/bin/kimi 2>/dev/null || true
+
+# polar-agent binary from stage 1
+COPY --from=builder /polar-agent /usr/local/bin/polar-agent
+COPY scripts/docker-agent-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/polar-agent /usr/local/bin/entrypoint.sh
+
+# Workdir for coder output. Single mount point, agent attaches per-
+# bot subdirs underneath (POLAR_WORK_ROOT/<bot_id>/<project_id>/).
+ENV POLAR_WORK_ROOT=/work \
+    HOME=/root \
+    PATH="/root/.local/bin:/usr/local/bin:${PATH}"
+WORKDIR /work
+VOLUME ["/work"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
