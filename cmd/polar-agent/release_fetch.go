@@ -141,8 +141,18 @@ func ensureReleaseBinary(ctx context.Context, cfg AgentConfig, module, channel s
 	return dest, nil
 }
 
+// releaseBaseURL is where /release/* lives. On some deployments (e.g. zen) the
+// release service is a separate vhost (release.4950.store) from the dock server
+// the agent is configured with, so allow an override; default to cfg.Server.
+func releaseBaseURL(cfg AgentConfig) string {
+	if v := strings.TrimSpace(os.Getenv("POLAR_RELEASE_BASE_URL")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return strings.TrimRight(cfg.Server, "/")
+}
+
 func resolveRelease(ctx context.Context, cfg AgentConfig, module, channel string) (*resolveResponse, error) {
-	base := strings.TrimRight(cfg.Server, "/")
+	base := releaseBaseURL(cfg)
 	url := fmt.Sprintf("%s/release/resolve?module=%s&channel=%s&platform=%s",
 		base, module, channel, releasePlatform())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
