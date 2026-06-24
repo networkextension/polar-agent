@@ -114,6 +114,42 @@ type HostInfo struct {
 	// doc/arch/wg-host-crosslink.md. Best-effort: empty when `wg` isn't on PATH
 	// or the agent lacks privilege to read the interface (no sudo -n).
 	WGPubkeys map[string]string `json:"wg_pubkeys,omitempty"`
+
+	// --- Network topology fields (host-network-topology.md). These feed the
+	// hosts 拓扑 view: per-NIC MAC + CIDR + kind, plus bridge membership and
+	// the default gateway. Unlike IPv4ByIface (which drops IP-less NICs), the
+	// MAC + kind maps cover EVERY non-loopback NIC — including a Thunderbolt
+	// bridge0 that's provisioned but un-cabled (no IP yet) — so the topology can
+	// draw the fabric before a cable is plugged. All refreshed every Collect()
+	// except BridgeMembers/DefaultGW (static-ish, cached in collectOS). ---
+
+	// MACByIface maps interface name → hardware (MAC) address, lowercase, for
+	// every non-loopback NIC that has one. The topology key: a NIC with no IP
+	// (an un-cabled Thunderbolt bridge member) still has a MAC, so it shows up.
+	MACByIface map[string]string `json:"mac_by_iface,omitempty"`
+
+	// IPv4CIDRByIface maps interface name → "ip/prefixlen" (e.g.
+	// "192.168.11.57/24") for NICs with a real (non-link-local) IPv4. The
+	// prefix is what lets the dock-side builder derive the subnet/segment;
+	// IPv4ByIface keeps the bare IP for back-compat.
+	IPv4CIDRByIface map[string]string `json:"ipv4_cidr_by_iface,omitempty"`
+
+	// IfaceKind maps interface name → a coarse network kind the topology groups
+	// by: "thunderbolt" | "wifi" | "ethernet" | "wg" | "mesh" | "other". On
+	// darwin the physical-port kinds come from `networksetup
+	// -listallhardwareports` (bridge0 = Thunderbolt Bridge, enN = Thunderbolt N
+	// / Wi-Fi / Ethernet); wg/mesh are overlaid by wg-pubkey presence + name +
+	// CGNAT CIDR. Other OSes fall back to name/CIDR heuristics.
+	IfaceKind map[string]string `json:"iface_kind,omitempty"`
+
+	// BridgeMembers maps a bridge interface → its member NICs (darwin only:
+	// `ifconfig bridge0` → en1/en2/en3 = the Thunderbolt ports). Lets the 雷电
+	// tab draw the bridge + the ports it aggregates. Cached in collectOS.
+	BridgeMembers map[string][]string `json:"bridge_members,omitempty"`
+
+	// DefaultGW is the host's default-route gateway ("192.168.11.1"), the
+	// center node for the LAN topology. Cached in collectOS. Empty on failure.
+	DefaultGW string `json:"default_gw,omitempty"`
 }
 
 // IPv6Addr is one IPv6 address on an interface, annotated with whether it's a
@@ -151,11 +187,238 @@ func Collect() HostInfo {
 	})
 	// Static hw facts come from the cache. IPs refresh every call —
 	// they change with DHCP/wg/USB-tether faster than the cache TTL.
-	out := cached
+	out := cached // copies BridgeMembers + DefaultGW (set in collectOS)
 	out.IPv4ByIface = collectIPv4ByIface()
 	out.IPv6ByIface = collectIPv6ByIface()
 	out.WGPubkeys = collectWGPubkeys()
+	out.MACByIface = collectMACByIface()
+	out.IPv4CIDRByIface = collectIPv4CIDRByIface()
+	out.IfaceKind = collectIfaceKind(out.WGPubkeys, out.IPv4CIDRByIface)
 	return out
+}
+
+// darwinHWPorts is the cached interface→kind map derived once (in collectOS on
+// darwin) from `networksetup -listallhardwareports`: a physical port's kind
+// ("thunderbolt"/"wifi"/"ethernet") is a static hardware fact. nil on
+// non-darwin (and before collectOS runs) — collectIfaceKind then falls back to
+// name/CIDR heuristics. Read-only after the sync.Once in Collect().
+var darwinHWPorts map[string]string
+
+// collectMACByIface returns interface_name → lowercase MAC for every
+// non-loopback NIC that has a hardware address — INCLUDING NICs with no IP
+// (an un-cabled Thunderbolt bridge0 + its member ports). This is the topology
+// key that survives "provisioned but not yet cabled". Errors swallowed.
+func collectMACByIface() map[string]string {
+	out := map[string]string{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		mac := ifi.HardwareAddr.String()
+		if mac == "" {
+			continue
+		}
+		out[ifi.Name] = strings.ToLower(mac)
+	}
+	return out
+}
+
+// collectIPv4CIDRByIface mirrors collectIPv4ByIface but keeps the prefix
+// length ("192.168.11.57/24") so the dock-side topology builder can mask each
+// address to its subnet. Same skip rules (loopback flag, 169.254 link-local,
+// down ifaces). First global IPv4 per iface.
+func collectIPv4CIDRByIface() map[string]string {
+	out := map[string]string{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil {
+				continue
+			}
+			if ip4[0] == 169 && ip4[1] == 254 {
+				continue
+			}
+			ones, _ := ipnet.Mask.Size()
+			out[ifi.Name] = ip4.String() + "/" + strconv.Itoa(ones)
+			break // first global IPv4 per iface; deterministic
+		}
+	}
+	return out
+}
+
+// collectIfaceKind tags every non-loopback NIC with a coarse network kind the
+// topology groups by. Resolution order (most authoritative first):
+//  1. wg-pubkey present on the iface           → "wg"
+//  2. darwin hardware-port map (cached)        → "thunderbolt"/"wifi"/"ethernet"
+//  3. name heuristics (bridge*/wg*/tun*/utun*) → thunderbolt/wg/mesh
+//  4. CGNAT 100.64.0.0/10 CIDR                 → "mesh" (overrides — a wg iface
+//     carrying a 100.64 addr is the tailscale-style mesh, not our wg overlay)
+//  5. default                                  → "other"
+//
+// wgKeys + cidrs are the just-collected dynamic maps so wg/mesh tagging tracks
+// interfaces coming and going. Pure-ish (reads net.Interfaces()); errors → {}.
+func collectIfaceKind(wgKeys, cidrs map[string]string) map[string]string {
+	out := map[string]string{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		n := ifi.Name
+		kind := ""
+		if _, isWG := wgKeys[n]; isWG {
+			kind = "wg"
+		}
+		if kind == "" {
+			if hp, ok := darwinHWPorts[n]; ok && hp != "" {
+				kind = hp
+			}
+		}
+		if kind == "" {
+			switch {
+			case strings.HasPrefix(n, "bridge"):
+				kind = "thunderbolt"
+			case strings.HasPrefix(n, "wg"):
+				kind = "wg"
+			case strings.HasPrefix(n, "tun"), strings.HasPrefix(n, "utun"):
+				kind = "mesh"
+			}
+		}
+		// CGNAT range is the mesh overlay regardless of how the iface looked.
+		if c, ok := cidrs[n]; ok && isCGNAT(c) {
+			kind = "mesh"
+		}
+		if kind == "" {
+			kind = "other"
+		}
+		out[n] = kind
+	}
+	return out
+}
+
+// isCGNAT reports whether an "ip/prefix" string falls in 100.64.0.0/10
+// (RFC6598 carrier-grade NAT, used by the tailscale-style mesh). Cheap prefix
+// check on the dotted-quad — good enough for tagging.
+func isCGNAT(cidr string) bool {
+	ip := cidr
+	if i := strings.IndexByte(ip, '/'); i >= 0 {
+		ip = ip[:i]
+	}
+	parsed := net.ParseIP(ip).To4()
+	if parsed == nil {
+		return false
+	}
+	// 100.64.0.0 – 100.127.255.255
+	return parsed[0] == 100 && parsed[1] >= 64 && parsed[1] <= 127
+}
+
+// darwinPortKind normalizes a `networksetup` "Hardware Port:" label to the
+// topology kind. Returns "" for ports we don't classify (Bluetooth PAN, etc.)
+// so the caller can fall through to name heuristics / "other". Pure.
+func darwinPortKind(port string) string {
+	p := strings.ToLower(strings.TrimSpace(port))
+	switch {
+	case strings.Contains(p, "wi-fi"), strings.Contains(p, "wifi"), strings.Contains(p, "airport"):
+		return "wifi"
+	case strings.Contains(p, "thunderbolt"):
+		return "thunderbolt"
+	case strings.Contains(p, "ethernet"), strings.Contains(p, "lan"):
+		return "ethernet"
+	default:
+		return ""
+	}
+}
+
+// parseDarwinHardwarePorts maps Device → topology kind from
+// `networksetup -listallhardwareports` (the same blob parseDarwinWifiMAC reads,
+// so collectOS execs it once). Each 3-line block is:
+//
+//	Hardware Port: Thunderbolt Bridge
+//	Device: bridge0
+//	Ethernet Address: 36:83:9a:11:75:80
+//
+// Only blocks whose port classifies (non-empty darwinPortKind) are recorded.
+// Pure — unit-tested.
+func parseDarwinHardwarePorts(blob string) map[string]string {
+	out := map[string]string{}
+	s := bufio.NewScanner(strings.NewReader(blob))
+	curKind := ""
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		switch {
+		case strings.HasPrefix(line, "Hardware Port:"):
+			curKind = darwinPortKind(strings.TrimPrefix(line, "Hardware Port:"))
+		case strings.HasPrefix(line, "Device:"):
+			dev := strings.TrimSpace(strings.TrimPrefix(line, "Device:"))
+			if dev != "" && curKind != "" {
+				out[dev] = curKind
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// parseDarwinBridgeMembers pulls the member interface names from an
+// `ifconfig <bridge>` blob, whose membership lines look like:
+//
+//	member: en1 flags=3<LEARNING,DISCOVER>
+//
+// Returns the members in file order. Pure — unit-tested.
+func parseDarwinBridgeMembers(blob string) []string {
+	var out []string
+	s := bufio.NewScanner(strings.NewReader(blob))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if !strings.HasPrefix(line, "member:") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "member:"))
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		out = append(out, fields[0])
+	}
+	return out
+}
+
+// parseRouteDefaultGW pulls the gateway from `route -n get default` (darwin)
+// output, whose relevant line is "    gateway: 192.168.11.1". Returns "" when
+// there's no default route (e.g. a host reachable only over wg). Pure.
+func parseRouteDefaultGW(blob string) string {
+	s := bufio.NewScanner(strings.NewReader(blob))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if strings.HasPrefix(line, "gateway:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "gateway:"))
+		}
+	}
+	return ""
 }
 
 // collectWGPubkeys returns wg_iface → base64 public key for every WireGuard

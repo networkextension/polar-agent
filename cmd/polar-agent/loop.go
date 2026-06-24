@@ -204,7 +204,7 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 	hi := hostinfo.Collect()
 	hello := map[string]any{
 		"kind":         "hello",
-		"version":      "polar-agent 0.3",
+		"version":      "polar-agent 0.4",
 		"workdir":      workdir,
 		"capabilities": helloCapabilities(spec != nil),
 		"host_os":      runtime.GOOS,
