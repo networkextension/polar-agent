@@ -16,19 +16,19 @@ func TestClaimTask_200ReturnsEnvelope(t *testing.T) {
 			t.Errorf("auth = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"kind":"research_task","research_run_id":42,"project_id":"p1","llm":{"base_url":"x","model":"m"}}`))
+		_, _ = w.Write([]byte(`{"kind":"filmscan_extract","job_id":42,"payload":{"video_url":"http://x/v.mp4","workspace_id":"ws1"}}`))
 	}))
 	defer srv.Close()
 
-	env, ok, err := claimTask(context.Background(), AgentConfig{Server: srv.URL, Token: "tok123"})
+	job, ok, err := claimTask(context.Background(), AgentConfig{Server: srv.URL, Token: "tok123"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if !ok || env == nil {
-		t.Fatalf("expected a claimed task, got ok=%v env=%v", ok, env)
+	if !ok || job == nil {
+		t.Fatalf("expected a claimed job, got ok=%v job=%v", ok, job)
 	}
-	if env.ResearchRunID != 42 || env.ProjectID != "p1" {
-		t.Fatalf("envelope round-trip: %+v", env)
+	if job.JobID != 42 || job.Kind != "filmscan_extract" {
+		t.Fatalf("envelope round-trip: %+v", job)
 	}
 }
 
@@ -38,12 +38,12 @@ func TestClaimTask_204EmptyQueue(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	env, ok, err := claimTask(context.Background(), AgentConfig{Server: srv.URL, Token: "t"})
+	job, ok, err := claimTask(context.Background(), AgentConfig{Server: srv.URL, Token: "t"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if ok || env != nil {
-		t.Fatalf("expected empty queue, got ok=%v env=%v", ok, env)
+	if ok || job != nil {
+		t.Fatalf("expected empty queue, got ok=%v job=%v", ok, job)
 	}
 }
 
