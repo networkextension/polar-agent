@@ -23,10 +23,19 @@ import (
 // This is always safe to call: when dock's pull mode is off it pushes
 // instead, so the queue is empty and claim just returns 204.
 
-// claimTask claims the next queued research run for this agent's bot.
-// Returns (env, true, nil) on a claimed run, (nil, false, nil) on an
-// empty queue (HTTP 204), or an error.
-func claimTask(ctx context.Context, cfg AgentConfig) (*researchTaskEnvelope, bool, error) {
+// claimedJob is the generic envelope the dock claim endpoint returns for an
+// agent_jobs row: a kind discriminator, the job id, and an opaque payload the
+// per-kind runner interprets. (Research runs use the push path, not claim.)
+type claimedJob struct {
+	Kind    string          `json:"kind"`
+	JobID   int64           `json:"job_id"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// claimTask claims the next queued fleet job this agent is capable of running.
+// Returns (job, true, nil) on a claimed job, (nil, false, nil) on an empty queue
+// (HTTP 204), or an error.
+func claimTask(ctx context.Context, cfg AgentConfig) (*claimedJob, bool, error) {
 	endpoint, err := researchCallbackURL(cfg.Server, "/api/agent/tasks/claim")
 	if err != nil {
 		return nil, false, err
@@ -51,14 +60,14 @@ func claimTask(ctx context.Context, cfg AgentConfig) (*researchTaskEnvelope, boo
 	if resp.StatusCode >= 400 {
 		return nil, false, fmt.Errorf("http %d: %s", resp.StatusCode, truncateForErr(string(body)))
 	}
-	var env researchTaskEnvelope
-	if err := json.Unmarshal(body, &env); err != nil {
+	var job claimedJob
+	if err := json.Unmarshal(body, &job); err != nil {
 		return nil, false, fmt.Errorf("claim decode: %w", err)
 	}
-	if env.ResearchRunID == 0 {
+	if job.JobID == 0 {
 		return nil, false, nil
 	}
-	return &env, true, nil
+	return &job, true, nil
 }
 
 // drainState single-flights drainClaims: only one drain runs at a time;
@@ -93,9 +102,9 @@ func drainClaims(ctx context.Context, cfg AgentConfig, workdir string, verbose b
 			if !ok {
 				break // 204 — queue empty
 			}
-			go func(e researchTaskEnvelope) {
-				if rerr := runResearchTask(ctx, cfg, workdir, e, verbose); rerr != nil {
-					log.Printf("[research] run=%d error: %v", e.ResearchRunID, rerr)
+			go func(j claimedJob) {
+				if rerr := runClaimedJob(ctx, cfg, workdir, j, verbose); rerr != nil {
+					log.Printf("[job] id=%d kind=%s error: %v", j.JobID, j.Kind, rerr)
 				}
 			}(*env)
 		}
