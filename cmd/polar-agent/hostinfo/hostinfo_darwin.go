@@ -9,8 +9,10 @@ package hostinfo
 
 import (
 	"context"
+	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -30,8 +32,10 @@ const (
 	// /usr/sbin is missing from our launchd plist's PATH, see the comment
 	// above the const block.
 	binIoreg           = "/usr/sbin/ioreg"
-	binNetworksetup    = "/usr/sbin/networksetup" // Wi-Fi MAC
+	binNetworksetup    = "/usr/sbin/networksetup" // Wi-Fi MAC + hardware-port kinds
 	binPmset           = "/usr/bin/pmset"         // battery presence
+	binIfconfig        = "/sbin/ifconfig"         // bridge membership (Thunderbolt fabric)
+	binRoute           = "/sbin/route"            // default gateway (LAN topology center)
 )
 
 func collectOS(h *HostInfo) {
@@ -66,8 +70,18 @@ func collectOS(h *HostInfo) {
 
 	// --- Tier-1/2 static facts (P0). All defensive: empty/nil on failure. ---
 
-	// Wi-Fi MAC — stable HW identity that survives IP churn.
-	h.WifiMAC = parseDarwinWifiMAC(execCapture(binNetworksetup, 2*time.Second, "-listallhardwareports"))
+	// Wi-Fi MAC — stable HW identity that survives IP churn. The same
+	// hardware-ports blob also yields the per-iface physical kind map
+	// (Thunderbolt Bridge / Wi-Fi / Ethernet) that collectIfaceKind reads —
+	// derive both from one exec.
+	hwPortsBlob := execCapture(binNetworksetup, 2*time.Second, "-listallhardwareports")
+	h.WifiMAC = parseDarwinWifiMAC(hwPortsBlob)
+	darwinHWPorts = parseDarwinHardwarePorts(hwPortsBlob)
+
+	// Thunderbolt fabric: bridge0's member ports + the host's default gateway
+	// (the LAN-topology center). Both static-ish → collected once in collectOS.
+	h.BridgeMembers = collectBridgeMembersDarwin()
+	h.DefaultGW = parseRouteDefaultGW(execCapture(binRoute, 2*time.Second, "-n", "get", "default"))
 
 	// Root-fs capacity via statfs (no exec).
 	h.DiskTotalBytes = diskTotalBytes("/")
@@ -84,6 +98,32 @@ func collectOS(h *HostInfo) {
 		hf := !isFanlessModel(model)
 		h.HasFan = &hf
 	}
+}
+
+// collectBridgeMembersDarwin returns bridge_iface → its member NICs for every
+// `bridge*` interface on the host (macOS names the Thunderbolt Bridge bridge0,
+// whose members are the Thunderbolt ethernet ports en1/en2/en3). One cheap
+// `ifconfig <bridge>` exec per bridge; skips bridges with no members. nil when
+// the host has no bridge interface (the common non-Mac / no-TB case).
+func collectBridgeMembersDarwin() map[string][]string {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	out := map[string][]string{}
+	for _, ifi := range ifs {
+		if !strings.HasPrefix(ifi.Name, "bridge") {
+			continue
+		}
+		members := parseDarwinBridgeMembers(execCapture(binIfconfig, 2*time.Second, ifi.Name))
+		if len(members) > 0 {
+			out[ifi.Name] = members
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // diskTotalBytes returns the total capacity of the filesystem containing
