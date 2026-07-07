@@ -61,21 +61,6 @@ var bundleStrippedEnv = []string{
 	"DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
 }
 
-// BundleConfig is the skill.start config blob for KindBundle.
-//
-// Dock has already validated args against the bundle's declared
-// schema; agent just sanity-checks the bundle/version/entrypoint
-// triple is well-formed and not path-malicious.
-type BundleConfig struct {
-	Bundle      string            `json:"bundle"`              // e.g. "local-llm-serve"
-	Version     string            `json:"version"`             // e.g. "0.1.0"
-	DownloadURL string            `json:"download_url,omitempty"` // dock-hosted; omitted if already installed
-	SHA256      string            `json:"sha256,omitempty"`     // verified after download
-	Entrypoint  string            `json:"entrypoint"`           // e.g. "scripts/detect_hardware.py"
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-}
-
 type bundleSkill struct {
 	rootDir   string // ~/.polar/bundles
 	installMu sync.Mutex

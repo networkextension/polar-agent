@@ -1,9 +1,9 @@
-//go:build unix
-
 package main
 
 // installer_glue.go — P1a: lookup helper + result senders for the
 // skill.install / skill.uninstall dispatchers in loop.go.
+// Untagged: on non-unix the bundle skill is never registered, so
+// getInstaller() returns nil and the dispatchers no-op.
 //
 // The installer rides on the bundle skill (shared rootDir + http
 // client + venv heuristics). We can't construct one at agent boot
