@@ -57,8 +57,8 @@ func collectOS(h *HostInfo) {
 
 	// Kernel via /proc/sys/kernel — avoids syscall.Uname's [65]int8
 	// awkwardness.
-	relName := readTrim("/proc/sys/kernel/ostype")    // "Linux"
-	relVer := readTrim("/proc/sys/kernel/osrelease")  // "6.8.0-45-generic"
+	relName := readTrim("/proc/sys/kernel/ostype")   // "Linux"
+	relVer := readTrim("/proc/sys/kernel/osrelease") // "6.8.0-45-generic"
 	if relName == "" {
 		relName = "Linux"
 	}

@@ -23,15 +23,15 @@ import (
 // Hardcoding the canonical macOS paths is safer than fixing every
 // operator's launchd PATH.
 const (
-	binSysctl          = "/usr/sbin/sysctl"
-	binSwVers          = "/usr/bin/sw_vers"
-	binSystemProfiler  = "/usr/sbin/system_profiler"
+	binSysctl         = "/usr/sbin/sysctl"
+	binSwVers         = "/usr/bin/sw_vers"
+	binSystemProfiler = "/usr/sbin/system_profiler"
 	// ioreg lives in /usr/sbin (same as sysctl + system_profiler) — and
 	// /usr/sbin is missing from our launchd plist's PATH, see the comment
 	// above the const block.
-	binIoreg           = "/usr/sbin/ioreg"
-	binNetworksetup    = "/usr/sbin/networksetup" // Wi-Fi MAC
-	binPmset           = "/usr/bin/pmset"         // battery presence
+	binIoreg        = "/usr/sbin/ioreg"
+	binNetworksetup = "/usr/sbin/networksetup" // Wi-Fi MAC
+	binPmset        = "/usr/bin/pmset"         // battery presence
 )
 
 func collectOS(h *HostInfo) {

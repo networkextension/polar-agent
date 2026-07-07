@@ -16,6 +16,7 @@ package hostinfo
 
 import (
 	"bufio"
+	"encoding/json"
 	"net"
 	"os/exec"
 	"runtime"
@@ -551,6 +552,72 @@ func parseDarwinIOPlatformUUID(blob string) string {
 			continue
 		}
 		return strings.TrimSpace(rest[:close])
+	}
+	return ""
+}
+
+// parseWindowsCIMJSON maps the compact JSON object emitted by
+// winCIMScript (hostinfo_windows.go) onto HostInfo. Fields the script
+// couldn't read arrive as null/""/0 and are left unset (omitempty).
+// Pure — lives here so it's unit-testable from every platform.
+func parseWindowsCIMJSON(h *HostInfo, blob string) {
+	var v struct {
+		UUID      string `json:"uuid"`
+		Vendor    string `json:"vendor"`
+		Model     string `json:"model"`
+		ModelName string `json:"model_name"`
+		CPU       string `json:"cpu"`
+		Cores     int    `json:"cores"`
+		Mem       uint64 `json:"mem"`
+		OS        string `json:"os"`
+		Ver       string `json:"ver"`
+		Build     string `json:"build"`
+		Boot      int64  `json:"boot"`
+		Disk      uint64 `json:"disk"`
+		GPU       string `json:"gpu"`
+		GPUVendor string `json:"gpu_vendor"`
+		Battery   *bool  `json:"battery"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(blob)), &v); err != nil {
+		return
+	}
+	h.MachineUUID = strings.TrimSpace(v.UUID)
+	h.HwVendor = strings.TrimSpace(v.Vendor)
+	h.HwModel = strings.TrimSpace(v.Model)
+	h.ModelName = strings.TrimSpace(v.ModelName)
+	h.CPUBrand = strings.TrimSpace(v.CPU)
+	h.CPUCores = v.Cores
+	h.MemoryBytes = v.Mem
+	h.OSName = strings.TrimSpace(v.OS)
+	h.OSVersion = strings.TrimSpace(v.Ver)
+	h.OSBuild = strings.TrimSpace(v.Build)
+	if v.Boot > 0 {
+		h.BootUnix = v.Boot
+	}
+	h.DiskTotalBytes = v.Disk
+	if v.Ver != "" {
+		h.Kernel = "Windows NT " + v.Ver + " " + runtime.GOARCH
+	}
+	if g := strings.TrimSpace(v.GPU); g != "" {
+		h.GPU = &GPU{Vendor: strings.TrimSpace(v.GPUVendor), Model: g}
+	}
+	h.HasBattery = v.Battery
+}
+
+// parseWindowsMachineGuid pulls the GUID out of
+// `reg query HKLM\SOFTWARE\Microsoft\Cryptography /v MachineGuid`:
+//
+//	HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography
+//	    MachineGuid    REG_SZ    12345678-1234-1234-1234-123456789012
+//
+// Returns "" if the value line is missing/malformed.
+func parseWindowsMachineGuid(blob string) string {
+	s := bufio.NewScanner(strings.NewReader(blob))
+	for s.Scan() {
+		f := strings.Fields(s.Text())
+		if len(f) >= 3 && f[0] == "MachineGuid" {
+			return f[len(f)-1]
+		}
 	}
 	return ""
 }

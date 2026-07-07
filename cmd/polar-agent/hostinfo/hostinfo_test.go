@@ -17,9 +17,9 @@ import (
 
 func TestClassifyIPv6(t *testing.T) {
 	cases := []struct {
-		ip            string
-		wantKeep      bool
-		wantPrivate   bool
+		ip          string
+		wantKeep    bool
+		wantPrivate bool
 	}{
 		{"2401:db00:1234:5678::1", true, false}, // global unicast → keep, public
 		{"2001:4860:4860::8888", true, false},   // global (Google DNS) → public
