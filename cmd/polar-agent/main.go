@@ -450,6 +450,14 @@ func runAttach(args []string) int {
 		}
 	}
 
+	// polar-cloud (P1-D): compute-task handlers. cloud.vm = macOS worker
+	// driving polar-vmd; cloud.guest = inside a VM image (FreeBSD/Linux).
+	// Both no-op on other OSes. POLAR_AGENT_CLOUD_DISABLED=true turns off.
+	if os.Getenv("POLAR_AGENT_CLOUD_DISABLED") != "true" {
+		registerCloudVMHandler()
+		registerCloudGuestHandler()
+	}
+
 	if err := runAgentLoop(cfg, *bot, resolved, *verbose, spec); err != nil {
 		log.Printf("agent loop ended: %v", err)
 		return exitNet
