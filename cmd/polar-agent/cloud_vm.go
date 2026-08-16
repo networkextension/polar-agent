@@ -12,6 +12,8 @@ package main
 //    "cpus":4, "mem_gib":4, "disk_size":"8G",
 //    "seed":{"POLAR_SERVER":"…","POLAR_ENROLL_TOKEN":"…","POLAR_AGENT_NAME":"vm-x"},   → polar/agent.env
 //    "seed_files":{"polar/extra.conf":"…"},                                          → extra files on the seed disk
+//    "seed_label":"cidata",                                                          → FAT volume label (cloud-init NoCloud); default POLARSEED
+//    "ready_regex":"POLAR_READY|login:",                                             → polar-vmd serial ready marker (default login:)
 //    "timeout_sec":60,                                                               → stop grace
 //    "vmd":{"url":"…","sha256":"…"}}                                                 → optional polar-vmd fetch
 // output: {"vm_id","op","dir","mac","ip","vmd":<polar-vmd JSON>}
@@ -33,16 +35,18 @@ import (
 )
 
 type cloudVMInput struct {
-	Op        string            `json:"op"`
-	VMID      string            `json:"vm_id"`
-	Image     cloudBlobRef      `json:"image"`
-	CPUs      int               `json:"cpus"`
-	MemGiB    int               `json:"mem_gib"`
-	DiskSize  string            `json:"disk_size"`
-	Seed      map[string]string `json:"seed"`
-	SeedFiles map[string]string `json:"seed_files"`
-	Timeout   int               `json:"timeout_sec"`
-	VMD       cloudBlobRef      `json:"vmd"`
+	Op         string            `json:"op"`
+	VMID       string            `json:"vm_id"`
+	Image      cloudBlobRef      `json:"image"`
+	CPUs       int               `json:"cpus"`
+	MemGiB     int               `json:"mem_gib"`
+	DiskSize   string            `json:"disk_size"`
+	Seed       map[string]string `json:"seed"`
+	SeedFiles  map[string]string `json:"seed_files"`
+	SeedLabel  string            `json:"seed_label"`  // FAT label of the seed disk ("" = polar-vmd default POLARSEED; "cidata" for cloud-init)
+	ReadyRegex string            `json:"ready_regex"` // polar-vmd --ready-regex ("" = default)
+	Timeout    int               `json:"timeout_sec"`
+	VMD        cloudBlobRef      `json:"vmd"`
 }
 
 type cloudBlobRef struct {
@@ -141,6 +145,12 @@ func runCloudVMTask(ctx context.Context, cfg AgentConfig, t computeTask) (any, e
 			}
 			defer os.RemoveAll(seedDir)
 			args = append(args, "--seed-dir", seedDir)
+			if in.SeedLabel != "" {
+				args = append(args, "--seed-label", in.SeedLabel)
+			}
+		}
+		if in.ReadyRegex != "" {
+			args = append(args, "--ready-regex", in.ReadyRegex)
 		}
 		if res, err := runVMD(ctx, vmd, 10*time.Minute, args...); err != nil {
 			out["vmd"] = res

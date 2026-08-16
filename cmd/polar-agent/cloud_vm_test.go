@@ -16,8 +16,9 @@ const fakeVMD = `#!/bin/sh
 printf '{"ok":true,"fake":true,"args":"%s"}\n' "$*"
 if [ "$1" = "create" ]; then
   # emulate polar-vmd writing config.json with a MAC into --dir
-  d=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && d="$2"; shift; done
+  all="$*"; d=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && d="$2"; shift; done
   mkdir -p "$d"; echo '{"mac":"0a:1b:2c:3d:4e:5f"}' > "$d/config.json"
+  echo "$all" > "$d/create.args"
 fi
 `
 
@@ -40,9 +41,9 @@ func TestCloudVM_CreateBuildsArgsAndSeed(t *testing.T) {
 	sha, _ := fileSHA256(img)
 	in := map[string]any{
 		"op": "create", "vm_id": "vm-1",
-		"image":     map[string]any{"url": "file://" + img, "sha256": sha},
-		"cpus":      2, "mem_gib": 3, "disk_size": "8G",
-		"seed":      map[string]string{"POLAR_SERVER": "https://x", "POLAR_ENROLL_TOKEN": "t"},
+		"image": map[string]any{"url": "file://" + img, "sha256": sha},
+		"cpus":  2, "mem_gib": 3, "disk_size": "8G",
+		"seed": map[string]string{"POLAR_SERVER": "https://x", "POLAR_ENROLL_TOKEN": "t"},
 	}
 	raw, _ := json.Marshal(in)
 	out, err := runCloudVMTask(context.Background(), AgentConfig{}, computeTask{ID: "ct", Skill: "cloud.vm", Input: raw})
@@ -65,6 +66,46 @@ func TestCloudVM_CreateBuildsArgsAndSeed(t *testing.T) {
 	}
 	if m["mac"] != "0a:1b:2c:3d:4e:5f" {
 		t.Fatalf("mac not read from config.json: %v", m["mac"])
+	}
+}
+
+// Ubuntu/cloud-init path: seed_files land on the seed disk root and the
+// label/ready-regex are forwarded to polar-vmd create.
+func TestCloudVM_CreatePassesSeedLabelAndReadyRegex(t *testing.T) {
+	home := setupFakeVMD(t)
+	img := filepath.Join(t.TempDir(), "base.raw")
+	_ = os.WriteFile(img, []byte("IMG"), 0o644)
+	sha, _ := fileSHA256(img)
+	in := map[string]any{
+		"op": "create", "vm_id": "vm-ub",
+		"image":       map[string]any{"url": "file://" + img, "sha256": sha},
+		"seed_files":  map[string]string{"user-data": "#cloud-config\n", "meta-data": "instance-id: vm-ub\n"},
+		"seed_label":  "cidata",
+		"ready_regex": "POLAR_READY|login:",
+	}
+	raw, _ := json.Marshal(in)
+	if _, err := runCloudVMTask(context.Background(), AgentConfig{}, computeTask{ID: "ct", Skill: "cloud.vm", Input: raw}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "vms", "vm-ub", "create.args"))
+	if err != nil {
+		t.Fatalf("fake vmd did not record create args: %v", err)
+	}
+	args := string(b)
+	for _, want := range []string{"--seed-dir ", "--seed-label cidata", "--ready-regex POLAR_READY|login:"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("create args missing %q: %s", want, args)
+		}
+	}
+	// no seed at all → no --seed-label even if given
+	in2 := map[string]any{"op": "create", "vm_id": "vm-noseed", "image": map[string]any{"url": "file://" + img, "sha256": sha}, "seed_label": "cidata"}
+	raw2, _ := json.Marshal(in2)
+	if _, err := runCloudVMTask(context.Background(), AgentConfig{}, computeTask{ID: "ct2", Skill: "cloud.vm", Input: raw2}); err != nil {
+		t.Fatalf("create2: %v", err)
+	}
+	b2, _ := os.ReadFile(filepath.Join(home, "vms", "vm-noseed", "create.args"))
+	if strings.Contains(string(b2), "--seed-label") {
+		t.Fatalf("unexpected --seed-label without seed: %s", b2)
 	}
 }
 
