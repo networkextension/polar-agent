@@ -53,10 +53,14 @@ func runCloudGuestTask(ctx context.Context, cfg AgentConfig, t computeTask) (any
 				argv = []string{"/sbin/shutdown", "-r", "now"}
 			}
 		default: // linux
+			sysctl := "/bin/systemctl"
+			if p, err := exec.LookPath("systemctl"); err == nil {
+				sysctl = p
+			}
 			if op == "poweroff" {
-				argv = []string{"/bin/systemctl", "poweroff"}
+				argv = []string{sysctl, "poweroff"}
 			} else {
-				argv = []string{"/bin/systemctl", "reboot"}
+				argv = []string{sysctl, "reboot"}
 			}
 		}
 		// Deferred so completeComputeTask (called by the loop right after we
