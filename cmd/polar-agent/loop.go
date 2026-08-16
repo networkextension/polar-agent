@@ -305,6 +305,12 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 	// empty and claim returns 204 immediately.
 	go drainClaims(ctx, cfg, workdir, verbose)
 
+	// polar-cloud (P1-D): generic compute-tasks pull loop — only when a
+	// handler registered (cloud.vm / cloud.guest). See compute_tasks.go.
+	if len(computeSkills()) > 0 {
+		go computeTaskLoop(ctx, cfg)
+	}
+
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -321,6 +327,7 @@ func runOneSession(cfg AgentConfig, botID, workdir string, verbose bool, spec *t
 		case "task.wake":
 			// Durable-dispatch doorbell — pull queued runs now.
 			go drainClaims(ctx, cfg, workdir, verbose)
+			wakeCompute()
 		case "tool_call":
 			var call toolCall
 			if err := json.Unmarshal(raw, &call); err != nil {
