@@ -1,4 +1,4 @@
-//go:build freebsd || linux || darwin
+//go:build freebsd || linux || darwin || openbsd || netbsd
 
 package main
 
@@ -46,7 +46,7 @@ func runCloudGuestTask(ctx context.Context, cfg AgentConfig, t computeTask) (any
 	case "poweroff", "reboot":
 		var argv []string
 		switch runtime.GOOS {
-		case "freebsd":
+		case "freebsd", "openbsd", "netbsd": // BSDs: -p = power off
 			if op == "poweroff" {
 				argv = []string{"/sbin/shutdown", "-p", "now"}
 			} else {
