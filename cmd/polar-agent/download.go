@@ -215,3 +215,56 @@ func fileSHA256(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// fetchBundle materialises a macOS golden bundle directory (file:// only) into
+// dest, verifying Disk.img against wantSHA256. Members are APFS-cloned when the
+// source is on the same volume (cp -Rc), else copied. A ".done" marker makes
+// the (expensive) verification skip on later creates.
+func fetchBundle(ctx context.Context, src, dest, wantSHA256 string) error {
+	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
+	if wantSHA256 == "" {
+		return errors.New("bundle: sha256 (of Disk.img) required")
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, ".done")); err == nil && strings.TrimSpace(string(b)) == wantSHA256 {
+		return nil
+	}
+	u, err := url.Parse(src)
+	if err != nil {
+		return fmt.Errorf("bundle: bad url: %w", err)
+	}
+	if u.Scheme != "file" && u.Scheme != "" {
+		return fmt.Errorf("bundle: only file:// sources are supported (got %s)", u.Scheme)
+	}
+	srcDir := u.Path
+	for _, m := range []string{"Disk.img", "AuxiliaryStorage", "HardwareModel", "MachineIdentifier"} {
+		if _, err := os.Stat(filepath.Join(srcDir, m)); err != nil {
+			return fmt.Errorf("bundle: %s missing in %s", m, srcDir)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	tmp := dest + ".part"
+	_ = os.RemoveAll(tmp)
+	if out, err := exec.Command("cp", "-Rc", srcDir, tmp).CombinedOutput(); err != nil {
+		log.Printf("[download] cp -Rc failed (%s); copying", strings.TrimSpace(string(out)))
+		_ = os.RemoveAll(tmp)
+		if out, err := exec.Command("cp", "-R", srcDir, tmp).CombinedOutput(); err != nil {
+			return fmt.Errorf("bundle copy: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	got, err := fileSHA256(filepath.Join(tmp, "Disk.img"))
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return err
+	}
+	if got != wantSHA256 {
+		_ = os.RemoveAll(tmp)
+		return fmt.Errorf("bundle Disk.img sha256 mismatch: got %s want %s", got, wantSHA256)
+	}
+	_ = os.RemoveAll(dest)
+	if err := os.Rename(tmp, dest); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dest, ".done"), []byte(wantSHA256+"\n"), 0o644)
+}
