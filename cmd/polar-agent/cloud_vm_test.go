@@ -144,3 +144,34 @@ func TestNormalizeMAC(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// macOS golden bundle: fetched as a directory keyed by Disk.img sha, verified, cached.
+func TestFetchBundle(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "VM.bundle")
+	_ = os.MkdirAll(src, 0o755)
+	for _, m := range []string{"Disk.img", "AuxiliaryStorage", "HardwareModel", "MachineIdentifier"} {
+		_ = os.WriteFile(filepath.Join(src, m), []byte("data-"+m), 0o644)
+	}
+	sha, _ := fileSHA256(filepath.Join(src, "Disk.img"))
+	dest := filepath.Join(t.TempDir(), sha+".bundle")
+	if err := fetchBundle(context.Background(), "file://"+src, dest, sha); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"Disk.img", "AuxiliaryStorage", "HardwareModel", "MachineIdentifier", ".done"} {
+		if _, err := os.Stat(filepath.Join(dest, m)); err != nil {
+			t.Fatalf("missing %s: %v", m, err)
+		}
+	}
+	// second call = cache hit (source may even be gone)
+	_ = os.RemoveAll(src)
+	if err := fetchBundle(context.Background(), "file://"+src, dest, sha); err != nil {
+		t.Fatalf("cached fetch: %v", err)
+	}
+	// wrong sha → error, no dest
+	if err := fetchBundle(context.Background(), "file://"+src, filepath.Join(t.TempDir(), "x.bundle"), "0000"); err == nil {
+		t.Fatal("expected error for missing source / bad sha")
+	}
+	if err := fetchBundle(context.Background(), "https://x/VM.bundle", filepath.Join(t.TempDir(), "y.bundle"), sha); err == nil || !strings.Contains(err.Error(), "file://") {
+		t.Fatalf("http bundle must be rejected: %v", err)
+	}
+}

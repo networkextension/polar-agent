@@ -1,4 +1,4 @@
-//go:build freebsd || linux
+//go:build freebsd || linux || darwin
 
 package main
 
@@ -49,6 +49,12 @@ func runCloudGuestTask(ctx context.Context, cfg AgentConfig, t computeTask) (any
 		case "freebsd":
 			if op == "poweroff" {
 				argv = []string{"/sbin/shutdown", "-p", "now"}
+			} else {
+				argv = []string{"/sbin/shutdown", "-r", "now"}
+			}
+		case "darwin": // macOS guest: agent runs as a root LaunchDaemon
+			if op == "poweroff" {
+				argv = []string{"/sbin/shutdown", "-h", "now"}
 			} else {
 				argv = []string{"/sbin/shutdown", "-r", "now"}
 			}

@@ -53,6 +53,10 @@ type cloudBlobRef struct {
 	URL       string `json:"url"`
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"size_bytes"`
+	// Kind: "" / "raw" = single raw disk file; "bundle" = macOS golden bundle
+	// directory (Disk.img + AuxiliaryStorage + HardwareModel + MachineIdentifier),
+	// file:// only, sha256 = sha of Disk.img.
+	Kind string `json:"kind"`
 }
 
 var cloudVMIDRx = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -72,6 +76,9 @@ func polarHome() string {
 func cloudVMDir(vmID string) string    { return filepath.Join(polarHome(), "vms", vmID) }
 func cloudImagesDir() string           { return filepath.Join(polarHome(), "images") }
 func cloudImagePath(sha string) string { return filepath.Join(cloudImagesDir(), sha+".raw") }
+
+// cloudBundlePath: cache dir for a macOS golden bundle keyed by its Disk.img sha.
+func cloudBundlePath(sha string) string { return filepath.Join(cloudImagesDir(), sha+".bundle") }
 
 // resolveVMDBinary: POLAR_VMD_BIN → ~/.polar/bin/polar-vmd → PATH → download.
 func resolveVMDBinary(ctx context.Context, ref cloudBlobRef) (string, error) {
@@ -124,9 +131,17 @@ func runCloudVMTask(ctx context.Context, cfg AgentConfig, t computeTask) (any, e
 		if in.Image.SHA256 == "" {
 			return out, errors.New("cloud.vm create: image.sha256 required")
 		}
-		img := cloudImagePath(strings.ToLower(in.Image.SHA256))
-		if err := downloadResumable(ctx, in.Image.URL, img, in.Image.SHA256); err != nil {
-			return out, fmt.Errorf("cloud.vm create: image: %w", err)
+		var img string
+		if strings.EqualFold(in.Image.Kind, "bundle") {
+			img = cloudBundlePath(strings.ToLower(in.Image.SHA256))
+			if err := fetchBundle(ctx, in.Image.URL, img, in.Image.SHA256); err != nil {
+				return out, fmt.Errorf("cloud.vm create: bundle: %w", err)
+			}
+		} else {
+			img = cloudImagePath(strings.ToLower(in.Image.SHA256))
+			if err := downloadResumable(ctx, in.Image.URL, img, in.Image.SHA256); err != nil {
+				return out, fmt.Errorf("cloud.vm create: image: %w", err)
+			}
 		}
 		args := []string{"create", "--dir", dir, "--image", img}
 		if in.DiskSize != "" {
