@@ -236,10 +236,12 @@ func fetchBundle(ctx context.Context, src, dest, wantSHA256 string) error {
 		return fmt.Errorf("bundle: only file:// sources are supported (got %s)", u.Scheme)
 	}
 	srcDir := u.Path
-	for _, m := range []string{"Disk.img", "AuxiliaryStorage", "HardwareModel", "MachineIdentifier"} {
-		if _, err := os.Stat(filepath.Join(srcDir, m)); err != nil {
-			return fmt.Errorf("bundle: %s missing in %s", m, srcDir)
-		}
+	// Only Disk.img is universal (its sha256 keys the cache). macOS bundles carry
+	// AuxiliaryStorage/HardwareModel/MachineIdentifier, netbsd qemu bundles carry
+	// kernel.img — the whole directory is copied either way and polar-vmd validates
+	// the members it needs.
+	if _, err := os.Stat(filepath.Join(srcDir, "Disk.img")); err != nil {
+		return fmt.Errorf("bundle: Disk.img missing in %s", srcDir)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
