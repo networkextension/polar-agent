@@ -218,6 +218,15 @@ func runCloudVMTask(ctx context.Context, cfg AgentConfig, t computeTask) (any, e
 			out["ip"] = ip
 		}
 	}
+	// qemu guests have no bridged NAT lease — report the worker-local ssh hostfwd
+	// (from polar-vmd status/run output) so `guest_ip` is still a usable address.
+	if _, ok := out["ip"]; !ok {
+		if vmdRes, ok := out["vmd"].(map[string]any); ok {
+			if fwd, _ := vmdRes["ssh_forward"].(string); fwd != "" {
+				out["ip"] = fwd
+			}
+		}
+	}
 	return out, nil
 }
 
