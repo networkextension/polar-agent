@@ -4,11 +4,11 @@
 //
 // Three commands:
 //
-//   polar-agent login   [--server=https://polar.example.com] --token=<raw>
-//       (--server defaults to https://zen.4950.store:2443 — override
-//        at build time with -ldflags "-X main.defaultServer=<url>")
-//   polar-agent status
-//   polar-agent attach  --bot=<bot_user_id> --workdir=.
+//	polar-agent login   [--server=https://polar.example.com] --token=<raw>
+//	    (--server defaults to https://zen.4950.store:2443 — override
+//	     at build time with -ldflags "-X main.defaultServer=<url>")
+//	polar-agent status
+//	polar-agent attach  --bot=<bot_user_id> --workdir=.
 //
 // Config lives at ~/.polar/agent.toml after login. attach is the
 // long-running mode; everything else is one-shot.
@@ -464,6 +464,12 @@ func runAttach(args []string) int {
 	// POLAR_AGENT_FW_DISABLED=true turns off.
 	if os.Getenv("POLAR_AGENT_FW_DISABLED") != "true" {
 		registerFirewallHandlers()
+		// FW-P8 采集器:events(pflog/nft log)+ 30s state 上报。进程级
+		// 生命周期(不挂 WS session);仅在本机受管(~/.polar/fw 有
+		// current.conf + base_url)时才真正开跑。
+		if os.Getenv("POLAR_AGENT_FW_COLLECTOR_DISABLED") != "true" {
+			startFirewallCollector(cfg)
+		}
 	}
 
 	if err := runAgentLoop(cfg, *bot, resolved, *verbose, spec); err != nil {
