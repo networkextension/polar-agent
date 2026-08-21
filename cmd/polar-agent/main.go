@@ -458,6 +458,14 @@ func runAttach(args []string) int {
 		registerCloudGuestHandler()
 	}
 
+	// polar-firewall (FW-P4): fw executor — claim fw_apply/fw_rollback,
+	// staged apply of fw-svc-compiled pf/nft artifacts + confirm handshake +
+	// local rollback. Non-root runs need NOPASSWD sudoers for pfctl/nft.
+	// POLAR_AGENT_FW_DISABLED=true turns off.
+	if os.Getenv("POLAR_AGENT_FW_DISABLED") != "true" {
+		registerFirewallHandlers()
+	}
+
 	if err := runAgentLoop(cfg, *bot, resolved, *verbose, spec); err != nil {
 		log.Printf("agent loop ended: %v", err)
 		return exitNet
