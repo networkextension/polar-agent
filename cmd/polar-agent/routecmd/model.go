@@ -123,7 +123,8 @@ func Normalize(r Route) (Route, error) {
 // Canonical sorts a route list deterministically (family, dst). Input is
 // not mutated.
 func Canonical(rs []Route) []Route {
-	out := append([]Route(nil), rs...)
+	out := make([]Route, 0, len(rs)) // never nil: state files must serialise as [] not null
+	out = append(out, rs...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Family != out[j].Family {
 			return out[i].Family < out[j].Family
