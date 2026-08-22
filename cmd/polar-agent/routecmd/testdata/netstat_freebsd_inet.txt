@@ -1,0 +1,13 @@
+Routing tables
+
+Internet:
+Destination        Gateway            Flags     Netif Expire
+default            192.168.11.1       UGS        dpni1
+10.10.10.0/24      link#3             U          dpni2
+10.10.10.2         link#3             UHS         lo0
+10.88.0.0/24       link#5             U           wgc1
+100.64.0.0/24      100.64.0.1         UGS         wgc1
+127.0.0.1          link#4             UH          lo0
+192.168.11.0/24    link#2             U          dpni1
+192.168.11.64      link#2             UHS         lo0
+10.9.0.0/16        127.0.0.1          UGRS        lo0

@@ -472,6 +472,18 @@ func runAttach(args []string) int {
 		}
 	}
 
+	// polar-routing: route executor — claim route_apply/route_rollback,
+	// three-way diff (desired × managed × kernel) + confirm handshake + local
+	// rollback; 60s collector posts the kernel table for drift views.
+	// Non-root runs need NOPASSWD sudoers for route / ip.
+	// POLAR_AGENT_ROUTING_DISABLED=true turns off.
+	if os.Getenv("POLAR_AGENT_ROUTING_DISABLED") != "true" {
+		registerRoutingHandlers()
+		if os.Getenv("POLAR_AGENT_ROUTING_COLLECTOR_DISABLED") != "true" {
+			startRoutingCollector(cfg)
+		}
+	}
+
 	if err := runAgentLoop(cfg, *bot, resolved, *verbose, spec); err != nil {
 		log.Printf("agent loop ended: %v", err)
 		return exitNet
