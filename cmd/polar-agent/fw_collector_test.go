@@ -233,3 +233,15 @@ func TestStateReportPayload(t *testing.T) {
 		t.Fatal("state not posted")
 	}
 }
+
+// 每机单例:同一 stateDir 第二个 collector 抢不到锁。
+func TestCollectorLockSingleton(t *testing.T) {
+	a := newTestCollector(t, "")
+	b := &fwCollector{stateDir: a.stateDir, warned: map[string]bool{}}
+	if !a.acquireLock() {
+		t.Fatal("first must acquire")
+	}
+	if b.acquireLock() {
+		t.Fatal("second must be refused")
+	}
+}

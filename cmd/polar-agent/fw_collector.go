@@ -67,6 +67,12 @@ func fwCollectorLoop(ctx context.Context, cfg AgentConfig) {
 		log.Printf("[fw] collector disabled: %v", err)
 		return
 	}
+	// 每机单例:一台机器常跑多个 polar-agent 实例(zen 4 个 launchd bot),
+	// 每个进程都会走到这里 —— flock 抢锁,抢不到的进程静默退出,否则
+	// events/state 会按实例数翻倍上报。锁随进程存亡自动释放。
+	if !c.acquireLock() {
+		return
+	}
 	for {
 		if base := c.baseURL(); base != "" {
 			log.Printf("[fw] collector active (base=%s)", base)
@@ -113,6 +119,25 @@ func newFWCollector(cfg AgentConfig) (*fwCollector, error) {
 		events:   make(chan fwEventRow, fwEventBufferCap),
 		warned:   map[string]bool{},
 	}, nil
+}
+
+// acquireLock:LOCK_EX|LOCK_NB 抢 stateDir/collector.lock;fd 故意不关,
+// 锁生命周期 = 进程生命周期。
+func (c *fwCollector) acquireLock() bool {
+	if err := os.MkdirAll(c.stateDir, 0o700); err != nil {
+		log.Printf("[fw] collector lock dir: %v", err)
+		return false
+	}
+	f, err := os.OpenFile(c.path("collector.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		log.Printf("[fw] collector lock: %v", err)
+		return false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close() // 别的实例在跑,本进程静默让位
+		return false
+	}
+	return true
 }
 
 func (c *fwCollector) warnOnce(key, format string, a ...any) {
