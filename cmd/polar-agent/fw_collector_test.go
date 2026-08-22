@@ -73,6 +73,15 @@ func TestParsePFLogLine(t *testing.T) {
 	if !ok || row.Proto != "icmp" || row.SrcPort != 0 || row.Src != "9.9.9.9" {
 		t.Fatalf("icmp parse wrong: ok=%v %+v", ok, row)
 	}
+	// -q 模式:UDP 固定 "UDP, length N",tcp 是小写 "tcp N"。
+	row, ok = parsePFLogLine(` 00:00:00.000000 rule 1/0(match): pass in on utun0: 10.88.0.2.52228 > 192.168.11.65.5353: UDP, length 2`)
+	if !ok || row.Proto != "udp" || row.DstPort != 5353 {
+		t.Fatalf("-q udp parse wrong: ok=%v %+v", ok, row)
+	}
+	row, ok = parsePFLogLine(`00:00:00.5 rule 2/0(match): block in on en0: 1.2.3.4.5000 > 5.6.7.8.22: tcp 0`)
+	if !ok || row.Proto != "tcp" || row.DstPort != 22 {
+		t.Fatalf("-q tcp parse wrong: ok=%v %+v", ok, row)
+	}
 	if _, ok := parsePFLogLine("tcpdump: listening on pflog0"); ok {
 		t.Fatal("noise line must not parse")
 	}
@@ -231,5 +240,17 @@ func TestStateReportPayload(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("state not posted")
+	}
+}
+
+// 每机单例:同一 stateDir 第二个 collector 抢不到锁。
+func TestCollectorLockSingleton(t *testing.T) {
+	a := newTestCollector(t, "")
+	b := &fwCollector{stateDir: a.stateDir, warned: map[string]bool{}}
+	if !a.acquireLock() {
+		t.Fatal("first must acquire")
+	}
+	if b.acquireLock() {
+		t.Fatal("second must be refused")
 	}
 }
