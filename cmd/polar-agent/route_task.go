@@ -99,6 +99,7 @@ func routeRunCmd(ctx context.Context, argv ...string) (string, error) {
 	if os.Geteuid() != 0 {
 		argv = append([]string{"sudo", "-n"}, argv...)
 	}
+	argv = routecmd.ResolveBin(argv, nil)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -144,6 +145,7 @@ func (e *routeExec) kernelTable(ctx context.Context) ([]routecmd.Route, error) {
 		if err != nil {
 			return nil, err
 		}
+		argv = routecmd.ResolveBin(argv, nil)
 		out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
 		if err != nil {
 			if fam == 6 {
