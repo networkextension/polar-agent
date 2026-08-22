@@ -1,6 +1,11 @@
 package routecmd
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
 
 // Render turns one Op into the argv to run on `goos`. No shell is involved —
 // callers exec the argv directly (prefixed with `sudo -n` when not root).
@@ -136,4 +141,35 @@ func ListArgv(goos string, family int) ([]string, error) {
 		return []string{"ip", f, "route", "show"}, nil
 	}
 	return nil, fmt.Errorf("routecmd: unsupported OS %q", goos)
+}
+
+// binCandidates — absolute fallbacks for the tools Render/ListArgv name.
+// launchd-started agents have a minimal PATH (no /usr/sbin, /sbin), so
+// "netstat"/"route"/"ip" must be resolved explicitly at exec time.
+var binCandidates = map[string][]string{
+	"netstat": {"/usr/sbin/netstat", "/usr/bin/netstat", "/bin/netstat"},
+	"route":   {"/sbin/route", "/usr/sbin/route", "/bin/route"},
+	"ip":      {"/sbin/ip", "/usr/sbin/ip", "/bin/ip", "/usr/bin/ip"},
+}
+
+// ResolveBin returns argv with argv[0] replaced by an absolute path when
+// the bare name is not on PATH but one of the known locations exists.
+// `exists` is injectable for tests (nil = os.Stat).
+func ResolveBin(argv []string, exists func(string) bool) []string {
+	if len(argv) == 0 || strings.Contains(argv[0], "/") {
+		return argv
+	}
+	if _, err := exec.LookPath(argv[0]); err == nil {
+		return argv
+	}
+	if exists == nil {
+		exists = func(p string) bool { _, err := os.Stat(p); return err == nil }
+	}
+	for _, c := range binCandidates[argv[0]] {
+		if exists(c) {
+			out := append([]string{c}, argv[1:]...)
+			return out
+		}
+	}
+	return argv
 }

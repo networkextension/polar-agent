@@ -179,6 +179,7 @@ func (c *routeCollector) snapshotTable(ctx context.Context) []routecmd.Route {
 		if err != nil {
 			return all
 		}
+		argv = routecmd.ResolveBin(argv, nil)
 		out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
 		if err != nil {
 			c.warnOnce(fmt.Sprintf("list%d", fam), "[route] list v%d table: %v", fam, err)

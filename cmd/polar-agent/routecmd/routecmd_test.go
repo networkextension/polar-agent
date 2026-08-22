@@ -231,3 +231,20 @@ func TestContainsOverlaps(t *testing.T) {
 		t.Fatal("Overlaps")
 	}
 }
+
+func TestResolveBin(t *testing.T) {
+	exists := func(p string) bool { return p == "/usr/sbin/netstat" }
+	got := ResolveBin([]string{"definitely-not-on-path-netstat"}, exists)
+	if got[0] != "definitely-not-on-path-netstat" {
+		t.Fatal("unknown tool must pass through")
+	}
+	// Force the PATH miss by clearing PATH for the call.
+	t.Setenv("PATH", "/nonexistent")
+	got = ResolveBin([]string{"netstat", "-rn"}, exists)
+	if got[0] != "/usr/sbin/netstat" || got[1] != "-rn" {
+		t.Fatalf("got %v", got)
+	}
+	if got := ResolveBin([]string{"/sbin/route", "-n"}, exists); got[0] != "/sbin/route" {
+		t.Fatal("absolute argv must be untouched")
+	}
+}
