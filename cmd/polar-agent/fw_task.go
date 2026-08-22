@@ -230,6 +230,17 @@ func (e *fwExec) restore(ctx context.Context, backup string) error {
 	return fmt.Errorf("fw: unknown backend %q", e.backend)
 }
 
+// persistBaseURL 把 task input 里的 fw-svc 地址落盘,fw_collector(FW-P8)
+// 用它做 events/state 上报的回连地址。
+func (e *fwExec) persistBaseURL(in fwTaskInput) {
+	if in.FWBaseURL == "" {
+		return
+	}
+	if err := os.WriteFile(e.path("base_url"), []byte(in.FWBaseURL+"\n"), 0o600); err != nil {
+		log.Printf("[fw] persist base_url: %v", err)
+	}
+}
+
 // promote:commit 后落状态文件(previous ← 备份,current ← 产物)。
 func (e *fwExec) promote(backup, compiled, hash string) error {
 	if err := os.WriteFile(e.path("previous.conf"), []byte(backup), 0o600); err != nil {
@@ -375,6 +386,7 @@ func fwApply(e *fwExec, in fwTaskInput) (any, error) {
 	}
 	fwMu.Lock()
 	defer fwMu.Unlock()
+	e.persistBaseURL(in) // fw_collector 的回连地址(FW-P8)
 
 	window := time.Duration(in.RollbackTimeoutSec) * time.Second
 	opCtx, cancel := context.WithTimeout(context.Background(), window+2*time.Minute)
@@ -435,6 +447,7 @@ func fwRollback(e *fwExec, in fwTaskInput) (any, error) {
 	}
 	fwMu.Lock()
 	defer fwMu.Unlock()
+	e.persistBaseURL(in)
 
 	opCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
