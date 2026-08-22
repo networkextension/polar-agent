@@ -302,3 +302,19 @@ func TestInverse(t *testing.T) {
 		}
 	}
 }
+
+func TestRouteRunCmdResolvesBeforeSudo(t *testing.T) {
+	// Regression: zen txn#1 failed with "sudo: route: command not found" because
+	// the absolute-path resolution ran after the sudo prefix was added.
+	t.Setenv("PATH", "/nonexistent")
+	argv := routecmd.ResolveBin([]string{"route", "-n", "add"}, func(p string) bool { return p == "/sbin/route" })
+	if argv[0] != "/sbin/route" {
+		t.Fatalf("resolve: %v", argv)
+	}
+	if os.Geteuid() != 0 {
+		argv = append([]string{"sudo", "-n"}, argv...)
+	}
+	if !strings.Contains(strings.Join(argv, " "), "/sbin/route -n add") {
+		t.Fatalf("sudo must wrap the absolute path: %v", argv)
+	}
+}
