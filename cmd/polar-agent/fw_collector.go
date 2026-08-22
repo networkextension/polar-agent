@@ -407,7 +407,8 @@ func (c *fwCollector) tailOnce(ctx context.Context) error {
 			!strings.Contains(out, "exists") && !strings.Contains(err.Error(), "exists") {
 			return fmt.Errorf("pflog0 create: %w", err)
 		}
-		argv = []string{"/usr/sbin/tcpdump", "-i", "pflog0", "-n", "-e", "-l", "-ttt"}
+		// -q:抑制应用层解码(否则 5353 显示 "domain" 而非 "UDP",proto 判不出)。
+		argv = []string{"/usr/sbin/tcpdump", "-i", "pflog0", "-n", "-e", "-l", "-ttt", "-q"}
 		parse = parsePFLogLine
 	case "linux":
 		if p, err := exec.LookPath("journalctl"); err == nil {
@@ -517,9 +518,9 @@ func parsePFLogLine(line string) (fwEventRow, bool) {
 	row.Dst, row.DstPort = splitHostPortDot(m[6])
 	tail := m[7]
 	switch {
-	case strings.Contains(tail, "Flags ["):
+	case strings.Contains(tail, "Flags [") || strings.HasPrefix(tail, "tcp"):
 		row.Proto = "tcp"
-	case strings.HasPrefix(tail, "UDP") || strings.Contains(tail, " UDP"):
+	case strings.HasPrefix(tail, "UDP") || strings.HasPrefix(tail, "udp") || strings.Contains(tail, " UDP"):
 		row.Proto = "udp"
 	case strings.Contains(tail, "ICMP") || strings.Contains(tail, "icmp"):
 		row.Proto = "icmp"
