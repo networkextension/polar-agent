@@ -248,3 +248,9 @@ func TestResolveBin(t *testing.T) {
 		t.Fatal("absolute argv must be untouched")
 	}
 }
+
+func TestCanonicalNeverNil(t *testing.T) {
+	if Canonical(nil) == nil {
+		t.Fatal("Canonical(nil) must be an empty, non-nil slice (state files serialise as [])")
+	}
+}
