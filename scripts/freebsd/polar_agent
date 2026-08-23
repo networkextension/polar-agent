@@ -1,0 +1,20 @@
+#!/bin/sh
+# PROVIDE: polar_agent
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+# polar-agent (outbound WSS to zen) with routing + firewall executors.
+#   sysrc polar_agent_enable=YES ; service polar_agent start
+. /etc/rc.subr
+name="polar_agent"
+rcvar="polar_agent_enable"
+load_rc_config $name
+: ${polar_agent_enable:="NO"}
+: ${polar_agent_runas:="swift"}
+: ${polar_agent_home:="/home/swift"}
+pidfile="/var/run/${name}.pid"
+logfile="${polar_agent_home}/.polar/agent.log"
+command="/usr/sbin/daemon"
+command_args="-P ${pidfile} -r -R 10 -o ${logfile} /usr/bin/su -m ${polar_agent_runas} -c /usr/local/bin/polar-agent-launch.sh"
+start_precmd="polar_agent_prestart"
+polar_agent_prestart() { install -d -o ${polar_agent_runas} ${polar_agent_home}/.polar; touch ${logfile}; chown ${polar_agent_runas} ${logfile}; }
+run_rc_command "$1"
