@@ -96,10 +96,7 @@ func newRouteExec() (*routeExec, error) {
 
 // routeRunCmd executes argv (sudo -n prefixed when not root).
 func routeRunCmd(ctx context.Context, argv ...string) (string, error) {
-	argv = routecmd.ResolveBin(argv, nil) // before the sudo prefix: sudo's secure_path also lacks /sbin on macOS
-	if os.Geteuid() != 0 {
-		argv = append([]string{"sudo", "-n"}, argv...)
-	}
+	argv = privPrefix(routecmd.ResolveBin(argv, nil)) // resolve first: sudo's secure_path also lacks /sbin on macOS
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

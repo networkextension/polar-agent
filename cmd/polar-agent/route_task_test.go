@@ -318,3 +318,24 @@ func TestRouteRunCmdResolvesBeforeSudo(t *testing.T) {
 		t.Fatalf("sudo must wrap the absolute path: %v", argv)
 	}
 }
+
+func TestPrivPrefixDoasFallback(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root")
+	}
+	orig := privLookPath
+	defer func() { privLookPath = orig }()
+	privLookPath = func(n string) (string, error) {
+		if n == "doas" {
+			return "/usr/local/bin/doas", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	if got := strings.Join(privPrefix([]string{"/sbin/route", "-n"}), " "); got != "doas -n /sbin/route -n" {
+		t.Fatalf("doas fallback: %q", got)
+	}
+	privLookPath = func(n string) (string, error) { return "/usr/bin/" + n, nil }
+	if got := privPrefix([]string{"x"})[0]; got != "sudo" {
+		t.Fatalf("sudo preferred when present: %q", got)
+	}
+}

@@ -106,9 +106,7 @@ func newFWExec(backend string) (*fwExec, error) {
 
 // fwRunCmd 执行一条命令(必要时 sudo -n 前缀),返回合并输出。
 func fwRunCmd(ctx context.Context, argv ...string) (string, error) {
-	if os.Geteuid() != 0 {
-		argv = append([]string{"sudo", "-n"}, argv...)
-	}
+	argv = privPrefix(argv) // sudo -n, or doas -n on sudo-less BSDs
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
