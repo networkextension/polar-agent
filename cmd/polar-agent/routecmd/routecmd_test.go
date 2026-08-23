@@ -1,6 +1,7 @@
 package routecmd
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,5 +253,43 @@ func TestResolveBin(t *testing.T) {
 func TestCanonicalNeverNil(t *testing.T) {
 	if Canonical(nil) == nil {
 		t.Fatal("Canonical(nil) must be an empty, non-nil slice (state files serialise as [])")
+	}
+}
+
+func TestLookupLongestPrefix(t *testing.T) {
+	tbl := ParseTable("linux", 4, readTestdata(t, "ip_route_linux_v4.txt"))
+	if r := Lookup(tbl, net.ParseIP("10.10.10.5")); r == nil || r.Dst != "10.10.10.0/24" || r.Gateway != "192.168.11.64" {
+		t.Fatalf("LPM: %+v", r)
+	}
+	if r := Lookup(tbl, net.ParseIP("8.8.8.8")); r == nil || !r.IsDefault() {
+		t.Fatalf("default fallback: %+v", r)
+	}
+	if r := Lookup(tbl, net.ParseIP("10.9.1.1")); r == nil || r.Kind != KindBlackhole {
+		t.Fatalf("blackhole: %+v", r)
+	}
+	if Lookup(nil, net.ParseIP("1.1.1.1")) != nil || Lookup(tbl, nil) != nil {
+		t.Fatal("nil cases")
+	}
+	if r := Lookup(tbl, net.ParseIP("fd00::1")); r != nil {
+		t.Fatalf("v6 ip must not match v4 table: %+v", r)
+	}
+}
+
+func TestFilter(t *testing.T) {
+	tbl := ParseTable("linux", 4, readTestdata(t, "ip_route_linux_v4.txt"))
+	if n := len(Filter(tbl, "")); n != len(tbl) {
+		t.Fatal("empty query = all")
+	}
+	if got := Filter(tbl, "10.10.10.5"); len(got) != 2 { // 10.10.10.0/24 + default
+		t.Fatalf("ip filter: %+v", got)
+	}
+	if got := Filter(tbl, "10.0.0.0/8"); len(got) != 4 { // default + 10.10.10/24 + 10.88.0/24 + 10.9/16
+		t.Fatalf("cidr filter: %+v", got)
+	}
+	if got := Filter(tbl, "docker0"); len(got) != 1 || got[0].Iface != "docker0" {
+		t.Fatalf("iface text filter: %+v", got)
+	}
+	if got := Filter(tbl, "BLACKHOLE"); len(got) != 2 { // blackhole + unreachable both map to kind=blackhole
+		t.Fatalf("kind text filter case-insensitive: %+v", got)
 	}
 }
