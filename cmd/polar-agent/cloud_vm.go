@@ -173,7 +173,20 @@ func runCloudVMTask(ctx context.Context, cfg AgentConfig, t computeTask) (any, e
 		}
 		fallthrough
 	case "start":
-		res, err := runVMD(ctx, vmd, 2*time.Minute, "run", "--dir", dir, "--detach")
+		// Size from the control plane (polar-cloud resize while stopped): polar-vmd
+		// run overrides config.json cpus/mem and grows disk.raw (never shrinks).
+		// Older polar-vmd ignores flags it does not know.
+		args := []string{"run", "--dir", dir, "--detach"}
+		if in.CPUs > 0 {
+			args = append(args, "--cpus", strconv.Itoa(in.CPUs))
+		}
+		if in.MemGiB > 0 {
+			args = append(args, "--mem-gib", strconv.Itoa(in.MemGiB))
+		}
+		if in.DiskSize != "" {
+			args = append(args, "--disk-size", in.DiskSize)
+		}
+		res, err := runVMD(ctx, vmd, 2*time.Minute, args...)
 		out["vmd"] = res
 		if err != nil {
 			return out, fmt.Errorf("cloud.vm %s: %w", in.Op, err)
