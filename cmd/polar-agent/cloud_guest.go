@@ -7,7 +7,7 @@ package main
 // VM off cleanly (FreeBSD ignores the VZ ACPI power button, see
 // polar-cloud/cmd/polar-vmd/README.md) without ssh keys.
 //
-// input: {"op":"poweroff|reboot|ping"}
+// input: {"op":"poweroff|reboot|ping|ssh_keys"} (ssh_keys: cloud_guest_sshkeys.go)
 // output: {"op","hostname","uptime_s"} — poweroff/reboot complete FIRST, then
 // run the command ~1s later so dock records the task as done.
 
@@ -42,6 +42,15 @@ func runCloudGuestTask(ctx context.Context, cfg AgentConfig, t computeTask) (any
 	}
 	switch op {
 	case "ping":
+		return out, nil
+	case "ssh_keys":
+		res, err := guestSSHKeys(t.Input)
+		if err != nil {
+			return out, err
+		}
+		for k, v := range res {
+			out[k] = v
+		}
 		return out, nil
 	case "poweroff", "reboot":
 		var argv []string

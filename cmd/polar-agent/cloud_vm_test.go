@@ -109,6 +109,30 @@ func TestCloudVM_CreatePassesSeedLabelAndReadyRegex(t *testing.T) {
 	}
 }
 
+// start carries the size from the control plane (polar-cloud resize while stopped).
+func TestCloudVM_StartPassesSize(t *testing.T) {
+	home := setupFakeVMD(t)
+	_ = os.MkdirAll(filepath.Join(home, "vms", "vm-rs"), 0o755)
+	raw, _ := json.Marshal(map[string]any{"op": "start", "vm_id": "vm-rs", "cpus": 4, "mem_gib": 8, "disk_size": "32G"})
+	out, err := runCloudVMTask(context.Background(), AgentConfig{}, computeTask{ID: "ct", Skill: "cloud.vm", Input: raw})
+	if err != nil {
+		t.Fatalf("start: %v (%v)", err, out)
+	}
+	args, _ := out.(map[string]any)["vmd"].(map[string]any)["args"].(string)
+	for _, want := range []string{"run --dir ", "--detach", "--cpus 4", "--mem-gib 8", "--disk-size 32G"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("start args missing %q: %s", want, args)
+		}
+	}
+	// no size in the input → plain run
+	raw, _ = json.Marshal(map[string]any{"op": "start", "vm_id": "vm-rs"})
+	out, _ = runCloudVMTask(context.Background(), AgentConfig{}, computeTask{ID: "ct2", Skill: "cloud.vm", Input: raw})
+	args, _ = out.(map[string]any)["vmd"].(map[string]any)["args"].(string)
+	if strings.Contains(args, "--cpus") || strings.Contains(args, "--disk-size") {
+		t.Fatalf("unexpected size flags: %s", args)
+	}
+}
+
 func TestCloudVM_BadOpAndID(t *testing.T) {
 	setupFakeVMD(t)
 	raw, _ := json.Marshal(map[string]any{"op": "explode", "vm_id": "ok-1"})
